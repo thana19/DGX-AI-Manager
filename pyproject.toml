@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = ["net: ยิงเน็ตจริง (ปกติข้าม — รันด้วย -m net)"]

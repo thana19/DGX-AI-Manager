@@ -1,0 +1,152 @@
+# AI Server v2 — catalog ของ vendor
+#
+# ไฟล์นี้ vendor ดูแล · ผู้ใช้เพิ่มโมเดลเองจะไปอยู่ที่ ~/.aiserver2/user-models.json (ดู docs/adr/0001-registry-split.md)
+# schema เดียวกันทั้งสองไฟล์ · validate ด้วย pydantic ใน server/catalog.py
+#
+# arch: อ่านจาก GGUF header ของไฟล์จริงเมื่อ 2026-08-29 (ไม่ใช่ค่าที่จดด้วยมือ — ของ v1 เคยจดผิดเป็น qwen4_exp)
+# requires: ปล่อยว่างได้ — ระบบเช็คจริงจาก arch list ใน libllama.so ของ engine ที่ติดตั้งอยู่
+#           ใส่เมื่อ engine ไม่มี arch list ให้อ่าน (vllm / ds4) หรือมีข้อบังคับอื่น
+models:
+  - id: ds4-flash-unsloth-iq2xxs
+    name: "DeepSeek-V4-Flash IQ2 (Unsloth)"
+    engine: llamacpp
+    path: ~/models/gguf/deepseek-v4-flash-0731/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00001-of-00003.gguf
+    arch: deepseek4
+    source_repo: unsloth/DeepSeek-V4-Flash-0731-GGUF
+    ctx: 131072
+    ctx_train: 1048576
+    need_gb: 105
+    args: ""
+    dl:
+      - https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00001-of-00003.gguf
+      - https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00002-of-00003.gguf
+      - https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00003-of-00003.gguf
+    note: "DeepSeek-V4-Flash quant ทางการของ Unsloth (UD-IQ2_XXS) · โหลดได้เลย ~91GB (แรมไม่พอ→เคลียร์ studio ก่อน) · รันบน llama-server"
+
+  - id: qwen38-ud-q4-mtp
+    name: "Qwen3.8-27B UD-Q4_K_XL + MTP"
+    engine: llamacpp
+    path: ~/models/gguf/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf
+    arch: qwen35
+    source_repo: unsloth/Qwen3.8-27B-GGUF
+    ctx: 262144
+    ctx_train: 262144
+    kv_kb_per_token: 64
+    need_gb: 55
+    args: "-md ~/models/gguf/qwen3.8-27b/mtp-Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp"
+    dl:
+      - https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_XL.gguf
+      - https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/mtp-Qwen3.8-27B-Q8_0.gguf
+    note: "sweet spot — ThaiEval 84.1% · ~14 tok/s ไทย · VLM+ctx ยาว · ไฟล์ ~21GB"
+
+  - id: qwen38-ud-q2-mtp
+    name: "Qwen3.8-27B UD-Q2_K_XL + MTP"
+    engine: llamacpp
+    path: ~/models/gguf/qwen3.8-27b/Qwen3.8-27B-UD-Q2_K_XL.gguf
+    arch: qwen35
+    source_repo: unsloth/Qwen3.8-27B-GGUF
+    ctx: 262144
+    ctx_train: 262144
+    kv_kb_per_token: 64
+    need_gb: 48
+    args: "-md ~/models/gguf/qwen3.8-27b/mtp-Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp"
+    dl:
+      - https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q2_K_XL.gguf
+      - https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/mtp-Qwen3.8-27B-Q8_0.gguf
+    note: "สายความเร็ว — ThaiEval 81.7% · 18-23 tok/s ไทย · ไฟล์ ~13GB"
+
+  - id: qwen38-q8-mtp
+    name: "Qwen3.8-27B Q8_0 + MTP"
+    engine: llamacpp
+    path: ~/models/gguf/qwen3.8-27b/Qwen3.8-27B-Q8_0.gguf
+    arch: qwen35
+    source_repo: ggml-org/Qwen3.8-27B-GGUF
+    ctx: 262144
+    ctx_train: 262144
+    kv_kb_per_token: 64
+    need_gb: 65
+    args: "-md ~/models/gguf/qwen3.8-27b/mtp-Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp"
+    dl:
+      - https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q8_0.gguf
+      - https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/mtp-Qwen3.8-27B-Q8_0.gguf
+    note: "เพดานคุณภาพตระกูล GGUF — ThaiEval 84.7% · ~9.6 tok/s ไทย (MTP) · ไฟล์ ~30GB"
+
+  - id: qwen36-td-q2k
+    name: "Qwen3.6-35B-A3B TD-Q2K (MoE)"
+    engine: llamacpp
+    path: ~/gguf/q36-gguf/Qwen3.6-35B-A3B-TD-Q2K.gguf
+    args: ""
+    note: "MoE เร็ว — ThaiEval v1 79.9% · quant พิเศษของเรา (ยังไม่มีดาวน์โหลดอัตโนมัติ)"
+
+  - id: muse-glimmer-30b
+    name: "Muse Glimmer 30B (Meta · VLM + drafter)"
+    engine: llamacpp
+    path: ~/models/gguf/muse-glimmer/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf
+    arch: muse-glimmer
+    source_repo: meta-models/Muse-Glimmer-30B-GGUF
+    ctx: 65536
+    ctx_train: 131072
+    need_gb: 40
+    args: "--mmproj ~/models/gguf/muse-glimmer/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf -md ~/models/gguf/muse-glimmer/dflash-Muse-Glimmer-30B-Q4_K_M.gguf --temp 1.0 --top-p 0.95 --top-k 64"
+    dl:
+      - https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf
+      - https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf
+      - https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/dflash-Muse-Glimmer-30B-Q4_K_M.gguf
+    note: "โมเดล agentic+อ่านภาพจาก Meta · ~14 tok/s · ต้องใช้ llama-server b10353 ขึ้นไป (รุ่นเก่าโหลดไม่ได้)"
+
+  - id: qwen38-nvfp4-vllm
+    name: "Qwen3.8-27B NVFP4 (vLLM + MTP)"
+    engine: vllm
+    path: ~/models/nvfp4/qwen3.8-27b-nvfp4
+    source_repo: unsloth/Qwen3.8-27B-NVFP4
+    need_gb: 32
+    args: ""
+    requires:
+      vllm: "26.07"
+    dl:
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/config.json
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/generation_config.json
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/model.safetensors
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/model.safetensors.index.json
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/model_mtp.safetensors
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/tokenizer.json
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/tokenizer_config.json
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/vocab.json
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/chat_template.jinja
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/preprocessor_config.json
+      - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/video_preprocessor_config.json
+    note: "โหมดเสิร์ฟหลายผู้ใช้ — batch-4 ≈ 30 tok/s รวม · กินแรมมาก ระบบจะเคลียร์ให้ก่อนสตาร์ท · ต้องติดตั้ง vLLM ก่อน (🧰 ซอฟต์แวร์)"
+
+  - id: qwen3.8-flash-next-udq2
+    name: "Qwen3.8-Flash-Next UD-Q2 (176B MoE)"
+    engine: llamacpp
+    path: ~/models/gguf/flashnext-udq2/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf
+    arch: qwen4exp
+    source_repo: unsloth/Qwen3.8-Flash-Next-GGUF
+    ctx: 32768
+    ctx_train: 262144
+    kv_kb_per_token: 48
+    need_gb: 82
+    args: ""
+    dl:
+      - https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf
+      - https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00002-of-00003.gguf
+      - https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00003-of-00003.gguf
+    note: "ไทยเยี่ยม ThaiEval v3 0.94 (แนะนำใส่ system prompt ไทย) · MoE 176B active 6B ~32 tok/s · quant ทางการ Unsloth ~79GB (เคลียร์ studio ก่อนถ้าแรมไม่พอ) · ⚠️ ต้องอัป llama-server รุ่นใหม่ก่อน (🧰 ซอฟต์แวร์ → รองรับ arch qwen4_exp; รุ่นเก่าโหลดไม่ได้)"
+
+  - id: glm-5.3-flash-udq1
+    name: "GLM-5.3-Flash UD-IQ1 (320B MoE · multimodal)"
+    engine: llamacpp
+    path: ~/models/gguf/glm-5.3-flash/GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf
+    arch: glm5next
+    source_repo: unsloth/GLM-5.3-Flash-GGUF
+    ctx: 32768
+    ctx_train: 1048576
+    need_gb: 100
+    args: ""
+    dl:
+      - https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf
+      - https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00002-of-00003.gguf
+      - https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00003-of-00003.gguf
+    note: "GLM-5.3-Flash (Zhipu · MIT) 320B active 18B · UD-IQ1 1-bit ~87GB (เคลียร์ studio ก่อน แรมตึง ~100GB) · ⚠️ ชอบคิดยาว → ใส่ system prompt 'ตอบตรงๆ สั้นๆ' ให้ตอบตรง · ต้องอัป llama-server รุ่นใหม่ก่อน (🧰 ซอฟต์แวร์ → รองรับ glm5next; รุ่นเก่าโหลดไม่ได้)"
+

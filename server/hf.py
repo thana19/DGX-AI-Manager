@@ -1,0 +1,164 @@
+"""แปลง HF repo id เป็นรายการ quant ให้ผู้ใช้เลือกก่อนดาวน์โหลด
+
+ใช้ `GET /api/models/{repo_id}?blobs=true` ของ Hugging Face — คืน siblings ทุกไฟล์ใน repo
+พร้อมขนาดและ sha256 (จาก lfs) โดยไม่ต้องโหลดไฟล์จริง (ดู CONTEXT.md ข้อ 5)
+
+ไฟล์ quant มักอยู่ในโฟลเดอร์ย่อย (UD-IQ1_S/, MTP/, BF16/) แต่บาง repo วางไว้ที่ root เลย
+(ดู CONTEXT.md ข้อ 6) — โมดูลนี้จัดกลุ่มให้เป็นก้อนเดียวไม่ว่าจะอยู่รูปแบบไหน
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from urllib.parse import quote
+
+import httpx
+
+API_BASE = "https://huggingface.co/api/models"
+RESOLVE_BASE = "https://huggingface.co"
+
+# ไฟล์ที่ไปคู่กับ quant แต่ไม่ใช่ quant เอง — mmproj (vision), mtp/dflash (draft model)
+# ใช้ร่วมกันได้หลาย quant ⇒ แยกออกจาก quant group เสมอ ไม่ว่าจะอยู่โฟลเดอร์ไหน
+_COMPANION_PREFIXES = ("mmproj-", "mtp-", "dflash-")
+
+# shard suffix แบบ "...-00001-of-00003.gguf" — ใช้ตัดท้ายก่อนหาชื่อ quant และหา shard_count
+_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d+)-of-(?P<total>\d+)$")
+
+# ชื่อ quant ที่อยู่ในชื่อไฟล์ root (ไม่มีโฟลเดอร์ย่อย) — เอาแค่ token ท้ายสุดของ stem
+# รูปแบบที่พบจริง: UD-Q4_K_XL, UD-IQ1_M, IQ2_XXS, Q8_0, Q4_0, BF16, F16, F32
+_QUANT_RE = re.compile(r"(?:(?:UD-)?(?:IQ|Q)\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32)$")
+
+
+class GatedRepoError(Exception):
+    """repo ติด gate — ต้องใช้ HF_TOKEN ที่มีสิทธิ์เข้าถึง"""
+
+
+class RepoNotFoundError(Exception):
+    """ไม่พบ repo (พิมพ์ผิด หรือถูกลบ)"""
+
+
+@dataclass
+class HfFile:
+    """ไฟล์ 1 ไฟล์ใน HF repo"""
+
+    path: str  # path เต็มใน repo เช่น "UD-IQ1_S/xxx-00001-of-00003.gguf"
+    size: int  # byte
+    sha256: str | None  # จาก lfs.sha256 — ใช้ verify หลังโหลดเสร็จ (ไฟล์ที่ไม่ใช่ lfs จะเป็น None)
+
+    @property
+    def url_path(self) -> str:
+        """path สำหรับต่อท้าย resolve URL — encode ให้ปลอดภัยแต่คง "/" ของโฟลเดอร์ไว้"""
+        return quote(self.path, safe="/")
+
+
+@dataclass
+class QuantGroup:
+    """quant 1 ตัวที่ผู้ใช้เลือกโหลดได้ — อาจมีหลายไฟล์ถ้าเป็น shard"""
+
+    key: str  # ชื่อโชว์ผู้ใช้ เช่น "UD-IQ1_S" หรือ "Q8_0"
+    files: list[HfFile]  # ไฟล์หลัก (shard ครบชุด) เรียงตาม shard
+    total_bytes: int  # ผลรวมของ files เท่านั้น (ไม่รวม companions)
+    shard_count: int  # 1 = ไฟล์เดียว
+    companions: list[HfFile] = field(default_factory=list)  # mmproj-/mtp-/dflash- ของ repo นี้
+
+
+def fetch_repo(repo_id: str, *, token: str | None = None, client: httpx.Client | None = None) -> dict:
+    """ยิง HF API ขอ metadata ของ repo พร้อม blobs (size/sha256 ทุกไฟล์)
+
+    401/403 = ติด gate (HF คืนสองแบบนี้แล้วแต่กรณี) · 404 = ไม่พบ repo
+    """
+    own_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        resp = http_client.get(f"{API_BASE}/{repo_id}", params={"blobs": "true"}, headers=headers)
+    finally:
+        if own_client:
+            http_client.close()
+
+    if resp.status_code in (401, 403):
+        raise GatedRepoError(f"{repo_id} ติด gate — ต้องใช้ HF_TOKEN ที่มีสิทธิ์เข้าถึง")
+    if resp.status_code == 404:
+        raise RepoNotFoundError(f"ไม่พบ repo: {repo_id}")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_files(repo_json: dict) -> list[HfFile]:
+    """แปลง siblings จาก HF API response เป็น HfFile ทั้งหมด (ยังไม่กรอง .gguf)"""
+    files = []
+    for sib in repo_json.get("siblings", []):
+        lfs = sib.get("lfs") or {}
+        files.append(HfFile(path=sib["rfilename"], size=sib["size"], sha256=lfs.get("sha256")))
+    return files
+
+
+def _is_companion(basename: str) -> bool:
+    return basename.startswith(_COMPANION_PREFIXES)
+
+
+def _strip_shard(stem: str) -> tuple[str, int | None, int | None]:
+    """ตัด "-00001-of-00003" ท้าย stem ออก คืน (base, shard_idx, shard_total)"""
+    m = _SHARD_RE.match(stem)
+    if not m:
+        return stem, None, None
+    return m.group("base"), int(m.group("idx")), int(m.group("total"))
+
+
+def group_quants(files: list[HfFile]) -> list[QuantGroup]:
+    """จัดกลุ่มไฟล์ .gguf เป็น quant ให้ผู้ใช้เลือก — ดูกติกาเต็มใน docstring โมดูลนี้/task"""
+    companions: list[HfFile] = []
+    # key -> list[(shard_idx, HfFile)] — shard_idx เป็น 0 ถ้าไม่ใช่ shard (ไฟล์เดียว)
+    buckets: dict[str, list[tuple[int, HfFile]]] = {}
+    shard_totals: dict[str, int] = {}
+
+    for f in files:
+        if not f.path.endswith(".gguf"):
+            continue
+
+        parts = f.path.split("/")
+        basename = parts[-1]
+        if _is_companion(basename):
+            companions.append(f)
+            continue
+
+        stem = basename[: -len(".gguf")]
+        base, shard_idx, shard_total = _strip_shard(stem)
+
+        if len(parts) > 1:
+            # อยู่ในโฟลเดอร์ย่อย → ชื่อโฟลเดอร์คือ key เสมอ (ข้อ 2)
+            key: str | None = parts[0]
+        else:
+            # อยู่ที่ root → ดึงชื่อ quant จากท้ายชื่อไฟล์ (ข้อ 3)
+            key = _QUANT_RE.search(base)
+            key = key.group(0) if key else None
+
+        if key is None:
+            # ไม่ตรง pattern quant ที่รู้จัก (เช่น imatrix_*.gguf) — ข้ามไปเลย
+            continue
+
+        buckets.setdefault(key, []).append((shard_idx or 0, f))
+        if shard_total is not None:
+            shard_totals[key] = shard_total
+
+    groups = []
+    for key, items in buckets.items():
+        items.sort(key=lambda t: t[0])
+        group_files = [f for _, f in items]
+        groups.append(
+            QuantGroup(
+                key=key,
+                files=group_files,
+                total_bytes=sum(f.size for f in group_files),
+                shard_count=shard_totals.get(key, len(group_files)),
+                companions=list(companions),
+            )
+        )
+
+    groups.sort(key=lambda g: g.total_bytes)  # น้อยไปมาก (ข้อ 7) — ผู้ใช้มองหาตัวที่แรมพอก่อน
+    return groups
+
+
+def resolve_url(repo_id: str, path: str) -> str:
+    """URL ดาวน์โหลดไฟล์จริงจาก path ใน repo (รวมกรณีมีโฟลเดอร์ย่อย)"""
+    return f"{RESOLVE_BASE}/{repo_id}/resolve/main/{quote(path, safe='/')}"

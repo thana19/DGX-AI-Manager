@@ -1,0 +1,25 @@
+# AI Server v2 — ตารางสำรองเรื่อง engine compat
+#
+# ⚠️ นี่ไม่ใช่แหล่งความจริงหลัก
+# แหล่งหลักคือถาม engine ที่ติดตั้งอยู่จริง:  strings libllama.so* | grep -x <arch>
+# (เหตุผล: note ของ v1 เคยจด arch ผิดเป็น qwen4_exp ทั้งที่ของจริงคือ qwen4exp — ตารางที่คนดูแลผิดได้)
+#
+# ไฟล์นี้มีไว้ตอบสิ่งที่ arch list ตอบไม่ได้:
+#   1. engine ที่ไม่มี arch list ให้อ่าน (vllm ใน docker, ds4)
+#   2. "ถ้า engine ปัจจุบันไม่รองรับ แล้วต้องอัปเป็นตัวไหน"
+
+llamacpp:
+  # build ที่ยืนยันด้วยมือแล้วว่ารองรับ arch เหล่านี้ (ตรวจจาก libllama.so จริง 2026-08-29)
+  verified:
+    b10696: [qwen35, qwen4exp, glm5next, deepseek4, muse-glimmer, qwen3moe, llama4, gemma3, deepseek2]
+  # arch → pack ที่แนะนำให้อัปเป็น เมื่อ engine ปัจจุบันไม่รองรับ
+  # (ค่า null = ยังไม่รู้ว่า build ไหนเริ่มรองรับ — ระบบจะแนะนำ pack ล่าสุดจาก dl.php แทน)
+  upgrade_hint:
+    qwen4exp: null
+    glm5next: null
+    deepseek4: null
+    muse-glimmer: null
+
+vllm:
+  # vLLM อ่าน arch list จากตัว container ไม่ได้ตรง ๆ → พึ่ง requires: ใน catalog แทน
+  image: aiserver-vllm:26.07
