@@ -346,22 +346,29 @@ _RAM_SAFETY_GB = 8  # กันชนให้ OS + buffer (ค่าเดี�
 
 
 def _ram_hogs() -> str:
-    """ชื่อ engine ที่กำลังถือแรมอยู่ — เอาไปบอกผู้ใช้ว่าต้องหยุดอะไรก่อน"""
+    """engine ที่กำลังรันอยู่ — เอาไปบอกผู้ใช้ว่าต้องหยุดอะไรก่อน
+
+    ⚠️ ห้ามกรองด้วย RSS: llama.cpp โหลดโมเดลแบบ mmap ⇒ RSS โชว์แค่ ~3GB
+    ทั้งที่กินแรมจริง 95GB (เจอกับตัวจริงบน GB10) — มี engine รันอยู่ = ผู้ต้องสงสัยเสมอ
+    """
     try:
         out = subprocess.run(
-            ["ps", "-eo", "rss,args"], capture_output=True, text=True, timeout=10
+            ["ps", "-eo", "args"], capture_output=True, text=True, timeout=10
         ).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
     hogs = []
     for line in out.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) != 2 or not parts[0].isdigit():
+        if "llama-server" not in line and "ds4-server" not in line:
             continue
-        gb = int(parts[0]) / 1048576
-        if gb >= 5 and ("llama-server" in parts[1] or "ds4-server" in parts[1]):
-            port = re.search(r"--port\s+(\d+)", parts[1])
-            hogs.append(f"llama-server :{port.group(1) if port else '?'} (~{gb:.0f} GB)")
+        if line.startswith("ps ") or " grep " in line:
+            continue
+        port = re.search(r"--port\s+(\d+)", line)
+        model = re.search(r"-m\s+(\S+)", line)
+        name = os.path.basename(model.group(1)) if model else "โมเดล"
+        hogs.append(f"{name} บนพอร์ต :{port.group(1) if port else '?'}")
+    if not hogs:
+        return ""
     return " และ ".join(hogs)
 
 
@@ -406,7 +413,7 @@ def activate(req: ActivateReq) -> dict[str, Any]:
                 detail=(
                     f"แรมไม่พอ — {entry.id} ต้องการราว {want:.0f} GB แต่ว่างอยู่ {avail:.0f} GB "
                     f"(กันไว้ให้ระบบ {_RAM_SAFETY_GB} GB)"
-                    + (f" · ตอนนี้ {busy} ถือแรมอยู่ หยุดตัวนั้นก่อนแล้วลองใหม่" if busy else "")
+                    + (f" · ตอนนี้ {busy} ถือแรมอยู่ — หยุดตัวนั้นก่อนแล้วลองใหม่" if busy else "")
                 ),
             )
 

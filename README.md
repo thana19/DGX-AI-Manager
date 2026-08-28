@@ -4,7 +4,7 @@
 
 - **เฟส 1 — Model & Engine Manager** (กำลังทำ) · รันที่ `:9001` คู่กับ hub เดิม
 - อ่านก่อนเริ่ม: [`CONTEXT.md`](CONTEXT.md) · [PRD เฟส 1](docs/prd/model-engine-manager.md) · [ADR 0001](docs/adr/0001-registry-split.md)
-- สรุปแผนแบบหน้าเว็บ: [`html-plan/phase1.html`](html-plan/phase1.html)
+- สรุปแผนแบบหน้าเว็บ: [`html-plan/model-engine-manager-2026-08-28_2330.html`](html-plan/model-engine-manager-2026-08-28_2330.html)
 
 ## โครงสร้าง
 
