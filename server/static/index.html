@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Server v2 — Model &amp; Engine Manager</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --border:#30363d;
+    --text:#e6edf3; --sub:#8b949e;
+    --accent:#58a6ff; --green:#3fb950; --orange:#d29922; --red:#f85149;
+  }
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:'Sarabun', system-ui, -apple-system, sans-serif;
+    margin:0; padding:0 0 80px; line-height:1.6;
+  }
+  a{color:var(--accent);}
+  .wrap{max-width:1120px; margin:0 auto; padding:0 20px;}
+
+  /* ===== topbar ===== */
+  .topbar{
+    background:var(--card); border-bottom:1px solid var(--border);
+    padding:14px 0; margin-bottom:32px;
+  }
+  .topbar-row{display:flex; flex-wrap:wrap; align-items:center; gap:18px; justify-content:space-between;}
+  .topbar h1{font-size:1.15rem; margin:0; color:var(--text); white-space:nowrap;}
+  .topbar-stats{display:flex; flex-wrap:wrap; gap:16px; font-size:0.85rem; color:var(--sub);}
+  .topbar-stats b{color:var(--text); font-weight:600;}
+  .engines-list{display:flex; flex-wrap:wrap; gap:8px; font-size:0.8rem;}
+  .engine-chip{
+    display:inline-flex; align-items:center; gap:5px;
+    background:var(--bg); border:1px solid var(--border); border-radius:20px;
+    padding:3px 10px 3px 8px; color:var(--sub);
+  }
+  .engine-chip .dot{width:7px; height:7px; border-radius:50%; background:var(--green); flex-shrink:0;}
+  .engine-chip.off .dot{background:var(--red);}
+  .engine-chip b{color:var(--text); font-weight:600;}
+
+  /* ===== message bar ===== */
+  #msgbar{position:sticky; top:0; z-index:50;}
+  .msg{
+    padding:10px 16px; border-radius:8px; font-size:0.88rem; margin:0 0 16px;
+    border:1px solid var(--border); background:var(--card);
+    display:flex; align-items:flex-start; gap:10px; justify-content:space-between;
+  }
+  .msg.msg-error{border-color:var(--red); color:var(--red);}
+  .msg.msg-ok{border-color:var(--green); color:var(--green);}
+  .msg button.close{
+    background:none; border:none; color:inherit; cursor:pointer; font-size:1rem;
+    line-height:1; padding:0 2px; opacity:0.7;
+  }
+  .msg button.close:hover{opacity:1;}
+
+  section{margin-bottom:44px;}
+  h2{font-size:1.15rem; color:var(--accent); margin:0 0 6px; display:flex; align-items:center; gap:8px;}
+  .section-hint{color:var(--sub); font-size:0.85rem; margin:0 0 16px;}
+
+  .card{background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 18px;}
+
+  button{
+    font-family:inherit; cursor:pointer; border-radius:6px; border:1px solid var(--border);
+    background:var(--bg); color:var(--text); padding:6px 12px; font-size:0.85rem;
+    transition:opacity .15s;
+  }
+  button:hover:not(:disabled){border-color:var(--accent);}
+  button:disabled{opacity:0.45; cursor:not-allowed;}
+  button.primary{background:rgba(88,166,255,0.12); border-color:var(--accent); color:var(--accent);}
+  button.danger{background:rgba(248,81,73,0.10); border-color:var(--red); color:var(--red);}
+  button.warn{background:rgba(210,153,34,0.10); border-color:var(--orange); color:var(--orange);}
+  button.small{padding:4px 9px; font-size:0.78rem;}
+
+  input[type=text], input[type=number], input[type=password], select, textarea{
+    font-family:inherit; background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    color:var(--text); padding:7px 10px; font-size:0.88rem; width:100%;
+  }
+  input:focus, select:focus, textarea:focus{outline:none; border-color:var(--accent);}
+  label{font-size:0.8rem; color:var(--sub); display:block; margin-bottom:4px;}
+  .field{margin-bottom:10px;}
+
+  .badge{
+    display:inline-flex; align-items:center; gap:4px; border-radius:20px; padding:2px 9px;
+    font-size:0.76rem; font-weight:600; border:1px solid transparent; white-space:nowrap;
+  }
+  .badge-ok{background:rgba(63,185,80,0.12); color:var(--green); border-color:var(--green);}
+  .badge-warn{background:rgba(210,153,34,0.12); color:var(--orange); border-color:var(--orange);}
+  .badge-bad{background:rgba(248,81,73,0.12); color:var(--red); border-color:var(--red);}
+  .badge-muted{background:rgba(139,148,158,0.12); color:var(--sub); border-color:var(--border);}
+
+  /* ===== catalog ===== */
+  #catalog-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:14px;}
+  .model-card{display:flex; flex-direction:column; gap:8px;}
+  .model-file{font-weight:600; font-size:0.95rem; word-break:break-all;}
+  .model-name{color:var(--sub); font-size:0.82rem;}
+  .model-badges{display:flex; flex-wrap:wrap; gap:6px;}
+  .model-meta{color:var(--sub); font-size:0.78rem; display:flex; flex-wrap:wrap; gap:10px;}
+  .model-note{
+    color:var(--sub); font-size:0.8rem; margin:0;
+    display:-webkit-box; -webkit-line-clamp:2; line-clamp:2; -webkit-box-orient:vertical;
+    overflow:hidden;
+  }
+  .model-reason{font-size:0.78rem; color:var(--orange);}
+  .model-actions{display:flex; flex-wrap:wrap; gap:8px; margin-top:4px;}
+  .activate-panel{
+    display:none; gap:8px; align-items:flex-end; flex-wrap:wrap;
+    background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px; margin-top:6px;
+  }
+  .activate-panel.open{display:flex;}
+  .activate-panel .field{margin-bottom:0; min-width:90px;}
+  .activate-log{
+    font-size:0.76rem; color:var(--sub); background:var(--bg); border:1px solid var(--border);
+    border-radius:6px; padding:6px 8px; margin-top:4px; white-space:pre-wrap; word-break:break-all;
+  }
+
+  /* ===== resolve / add model ===== */
+  .resolve-row{display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;}
+  .resolve-row .field{flex:1; min-width:220px; margin-bottom:0;}
+  .resolve-row .field.token{flex:0 0 200px; min-width:160px;}
+  .resolve-info{
+    display:flex; flex-wrap:wrap; gap:16px; font-size:0.86rem; color:var(--sub);
+    margin:14px 0 10px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+  }
+  .resolve-info b{color:var(--text);}
+  .companions{font-size:0.78rem; color:var(--sub); margin:6px 0 0;}
+  table{width:100%; border-collapse:collapse; font-size:0.86rem;}
+  th, td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--border); white-space:nowrap;}
+  th{color:var(--sub); font-weight:600; font-size:0.76rem; text-transform:uppercase; letter-spacing:0.02em;}
+  .table-scroll{overflow-x:auto; border:1px solid var(--border); border-radius:10px;}
+  .table-scroll table{border:none;}
+
+  .advanced-toggle{display:flex; align-items:center; gap:8px; margin:14px 0; font-size:0.86rem; color:var(--sub);}
+  .advanced-toggle input{width:auto;}
+  #advanced-form{
+    display:none; background:var(--bg); border:1px solid var(--border); border-radius:10px;
+    padding:14px 16px; margin-top:8px;
+  }
+  #advanced-form.open{display:block;}
+  .form-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:10px 14px;}
+  .form-grid .field.full{grid-column:1/-1;}
+
+  /* ===== downloads ===== */
+  #downloads-list{display:flex; flex-direction:column; gap:12px;}
+  .job-card{display:flex; flex-direction:column; gap:8px;}
+  .job-head{display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;}
+  .job-title{font-weight:600; font-size:0.92rem;}
+  .job-state{font-size:0.78rem;}
+  .progress-track{
+    width:100%; height:10px; border-radius:6px; background:var(--bg); border:1px solid var(--border); overflow:hidden;
+  }
+  .progress-fill{height:100%; background:var(--accent); transition:width .3s;}
+  .progress-fill.state-paused{background:var(--orange);}
+  .progress-fill.state-error{background:var(--red);}
+  .progress-fill.state-done{background:var(--green);}
+  .job-meta{display:flex; flex-wrap:wrap; gap:14px; font-size:0.78rem; color:var(--sub);}
+  .job-actions{display:flex; gap:8px;}
+  .job-files{margin-top:4px; font-size:0.76rem; color:var(--sub);}
+  .job-file-row{display:flex; justify-content:space-between; gap:10px; padding:3px 0; border-bottom:1px dashed var(--border);}
+  .job-file-row:last-child{border-bottom:none;}
+  .job-file-error{color:var(--red);}
+
+  .empty-state{color:var(--sub); font-size:0.88rem; padding:20px; text-align:center;}
+
+  @media (max-width:640px){
+    .topbar-row{flex-direction:column; align-items:flex-start;}
+    table, .table-scroll{font-size:0.8rem;}
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap topbar-row">
+    <h1>🖥️ AI Server v2 — Model &amp; Engine Manager</h1>
+    <div class="topbar-stats" id="health-stats">กำลังโหลดสถานะเครื่อง…</div>
+    <div class="engines-list" id="engines-list">กำลังโหลด engine…</div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div id="msgbar"></div>
+
+  <section>
+    <h2>📚 คลังโมเดล</h2>
+    <p class="section-hint">โมเดลทั้งหมดที่ระบบรู้จัก (vendor + ที่เพิ่มเอง)</p>
+    <div id="catalog-grid"></div>
+    <div id="catalog-status" class="empty-state" style="display:none;"></div>
+  </section>
+
+  <section>
+    <h2>➕ เพิ่มโมเดล</h2>
+    <p class="section-hint">วาง HF repo id เพื่อตรวจสอบ quant ที่มี ก่อนเพิ่มเข้าคลัง</p>
+    <div class="card">
+      <div class="resolve-row">
+        <div class="field">
+          <label for="resolve-repo">HF repo id</label>
+          <input type="text" id="resolve-repo" placeholder="เช่น unsloth/DeepSeek-V4-Flash-0731-GGUF">
+        </div>
+        <div class="field token">
+          <label for="resolve-token">HF token (ถ้าจำเป็น)</label>
+          <input type="password" id="resolve-token" placeholder="สำหรับ repo แบบ gated">
+        </div>
+        <button class="primary" id="resolve-btn">🔍 ตรวจสอบ</button>
+      </div>
+      <div id="resolve-status"></div>
+
+      <div id="resolve-result" style="display:none;">
+        <div class="resolve-info" id="resolve-info"></div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>quant</th><th>ไฟล์</th><th>ขนาด</th><th>แรมพอไหม</th><th>compat</th><th></th></tr>
+            </thead>
+            <tbody id="resolve-tbody"></tbody>
+          </table>
+        </div>
+
+        <label class="advanced-toggle">
+          <input type="checkbox" id="advanced-toggle">
+          ตั้งค่าเอง (advanced)
+        </label>
+
+        <div id="advanced-form">
+          <div class="form-grid">
+            <div class="field"><label for="adv-id">id</label><input type="text" id="adv-id"></div>
+            <div class="field"><label for="adv-name">name</label><input type="text" id="adv-name"></div>
+            <div class="field"><label for="adv-engine">engine</label>
+              <select id="adv-engine">
+                <option value="llamacpp">llamacpp</option>
+                <option value="vllm">vllm</option>
+                <option value="ds4">ds4</option>
+              </select>
+            </div>
+            <div class="field"><label for="adv-ctx">ctx</label><input type="number" id="adv-ctx"></div>
+            <div class="field"><label for="adv-need-gb">need_gb</label><input type="number" id="adv-need-gb"></div>
+            <div class="field full"><label for="adv-path">path</label><input type="text" id="adv-path"></div>
+            <div class="field full"><label for="adv-args">args</label><input type="text" id="adv-args"></div>
+          </div>
+          <div style="margin-top:12px;">
+            <button class="primary" id="adv-submit-btn">➕ เพิ่มเข้าคลัง</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>⬇ ดาวน์โหลด</h2>
+    <p class="section-hint">งานดาวน์โหลดที่กำลังทำงานหรือทำล่าสุด</p>
+    <div id="downloads-list"></div>
+    <div id="downloads-status" class="empty-state" style="display:none;"></div>
+  </section>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ===================== UTILS ===================== */
+
+  function escapeHtml(s){
+    if(s === null || s === undefined) return "";
+    return String(s)
+      .replace(/&/g,"&amp;")
+      .replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;")
+      .replace(/'/g,"&#39;");
+  }
+
+  function fmtGB(v){
+    if(v === null || v === undefined || isNaN(v)) return "-";
+    return Number(v).toFixed(1) + " GB";
+  }
+
+  function fmtBytesGB(bytes){
+    if(bytes === null || bytes === undefined || isNaN(bytes)) return "-";
+    return (Number(bytes)/1e9).toFixed(1) + " GB";
+  }
+
+  function fmtSpeed(bps){
+    if(!bps || isNaN(bps)) return "-";
+    return (Number(bps)/1e6).toFixed(1) + " MB/s";
+  }
+
+  function fmtEta(seconds){
+    if(seconds === null || seconds === undefined || isNaN(seconds)) return "-";
+    seconds = Math.max(0, Math.round(seconds));
+    var h = Math.floor(seconds/3600);
+    var m = Math.floor((seconds%3600)/60);
+    if(h > 0) return h + " ชม. " + m + " นาที";
+    if(m > 0) return m + " นาที";
+    return Math.max(1, seconds) + " วินาที";
+  }
+
+  function slugify(s){
+    return String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-+|-+$)/g, "");
+  }
+
+  function basename(p){
+    var parts = String(p || "").split("/");
+    return parts[parts.length - 1];
+  }
+
+  async function apiFetch(url, opts){
+    opts = opts || {};
+    var res;
+    try{
+      res = await fetch(url, opts);
+    }catch(e){
+      throw new Error("เชื่อมต่อ server ไม่ได้: " + e.message);
+    }
+    var data = null;
+    try{ data = await res.json(); }catch(e){ data = null; }
+    if(!res.ok){
+      var detail = (data && data.detail) ? data.detail : ("เกิดข้อผิดพลาด (HTTP " + res.status + ")");
+      throw new Error(detail);
+    }
+    return data;
+  }
+
+  function showMsg(text, kind){
+    var bar = document.getElementById("msgbar");
+    var box = document.createElement("div");
+    box.className = "msg " + (kind === "error" ? "msg-error" : "msg-ok");
+    box.innerHTML = "<span>" + escapeHtml(text) + "</span>" +
+      '<button class="close" aria-label="ปิด">✕</button>';
+    box.querySelector(".close").addEventListener("click", function(){ box.remove(); });
+    bar.prepend(box);
+    if(kind !== "error"){
+      setTimeout(function(){ box.remove(); }, 6000);
+    }
+  }
+
+  /* ===================== STATE ===================== */
+
+  var state = {
+    models: [],
+    engines: [],
+    resolveResult: null,
+    resolveRepoId: "",
+    downloadsTimer: null
+  };
+
+  /* ===================== TOPBAR ===================== */
+
+  async function loadHealth(){
+    var el = document.getElementById("health-stats");
+    try{
+      var h = await apiFetch("/api/health");
+      el.innerHTML =
+        "แรมรวม <b>" + escapeHtml(fmtGB(h.ram_total_gb)) + "</b> · " +
+        "ดิสก์ว่าง <b>" + escapeHtml(fmtGB(h.disk_free_gb)) + "</b> · " +
+        "พอร์ต <b>" + escapeHtml(h.port) + "</b> · " +
+        "v" + escapeHtml(h.version);
+    }catch(e){
+      el.textContent = "โหลดสถานะเครื่องไม่ได้: " + e.message;
+    }
+  }
+
+  async function loadEngines(){
+    var el = document.getElementById("engines-list");
+    try{
+      var data = await apiFetch("/api/engines");
+      state.engines = data.engines || [];
+      if(state.engines.length === 0){
+        el.innerHTML = '<span style="color:var(--sub);">ไม่พบ engine</span>';
+        return;
+      }
+      el.innerHTML = state.engines.map(function(e){
+        var archCount = (e.archs || []).length;
+        var ver = e.build || e.version || "-";
+        return '<span class="engine-chip' + (e.installed ? "" : " off") + '">' +
+          '<span class="dot"></span>' +
+          '<b>' + escapeHtml(e.name) + '</b> ' + escapeHtml(ver) + ' · ' + archCount + ' arch' +
+          (e.installed ? "" : " (ยังไม่ติดตั้ง)") +
+          '</span>';
+      }).join("");
+    }catch(e){
+      el.textContent = "โหลด engine ไม่ได้: " + e.message;
+    }
+  }
+
+  /* ===================== CATALOG ===================== */
+
+  function compatBadge(compat){
+    if(!compat) return '<span class="badge badge-muted">❓ ไม่ทราบ</span>';
+    var map = {
+      ok: ["badge-ok", "✅ พร้อมใช้"],
+      needs_upgrade: ["badge-warn", "⚠️ ต้องอัป engine"],
+      unknown: ["badge-bad", "❓ ไม่ทราบ"],
+      no_engine: ["badge-bad", "⛔ ไม่มี engine"]
+    };
+    var m = map[compat.status] || ["badge-muted", escapeHtml(compat.status || "-")];
+    return '<span class="badge ' + m[0] + '">' + m[1] + '</span>';
+  }
+
+  async function loadModels(){
+    var statusEl = document.getElementById("catalog-status");
+    var grid = document.getElementById("catalog-grid");
+    try{
+      var data = await apiFetch("/api/models");
+      state.models = data.models || [];
+      renderCatalog();
+    }catch(e){
+      grid.innerHTML = "";
+      statusEl.style.display = "block";
+      statusEl.textContent = "โหลดคลังโมเดลไม่ได้: " + e.message;
+    }
+  }
+
+  function renderCatalog(){
+    var grid = document.getElementById("catalog-grid");
+    var statusEl = document.getElementById("catalog-status");
+    if(state.models.length === 0){
+      grid.innerHTML = "";
+      statusEl.style.display = "block";
+      statusEl.textContent = "ยังไม่มีโมเดลในคลัง";
+      return;
+    }
+    statusEl.style.display = "none";
+    grid.innerHTML = state.models.map(renderModelCard).join("");
+    state.models.forEach(function(m){ wireModelCard(m); });
+  }
+
+  function renderModelCard(m){
+    var badges = [];
+    badges.push(compatBadge(m.compat));
+    if(m.source === "user") badges.push('<span class="badge badge-muted">source: user</span>');
+
+    var metaParts = [];
+    metaParts.push("engine: " + escapeHtml(m.engine || "-"));
+    if(m.arch) metaParts.push("arch: " + escapeHtml(m.arch));
+    if(m.ctx) metaParts.push("ctx: " + escapeHtml(m.ctx));
+    if(m.size_gb !== undefined && m.size_gb !== null) metaParts.push("ขนาด: " + escapeHtml(fmtGB(m.size_gb)));
+
+    var reason = "";
+    if(m.compat && m.compat.reason && m.compat.status !== "ok"){
+      reason = '<div class="model-reason">' + escapeHtml(m.compat.reason) +
+        (m.compat.action ? " — " + escapeHtml(m.compat.action) : "") + '</div>';
+    }
+
+    var actions = "";
+    if(!m.ready && m.has_dl){
+      actions += '<button class="small primary btn-download" data-id="' + escapeHtml(m.id) + '">⬇ ดาวน์โหลด</button>';
+    }
+    if(!m.ready && !m.has_dl){
+      actions += '<span style="color:var(--sub); font-size:0.78rem;">ยังไม่มีไฟล์บนดิสก์ (ไม่มีลิงก์ดาวน์โหลด)</span>';
+    }
+    if(m.ready){
+      var blockLoad = m.compat && (m.compat.status === "needs_upgrade" || m.compat.status === "no_engine");
+      if(m.compat && m.compat.status === "needs_upgrade"){
+        actions += '<button class="small warn btn-upgrade" data-id="' + escapeHtml(m.id) + '" data-engine="' + escapeHtml(m.engine) + '">⬆ อัป engine</button>';
+      }
+      actions += '<button class="small primary btn-activate-toggle" data-id="' + escapeHtml(m.id) + '"' +
+        (blockLoad ? " disabled" : "") + '>▶ โหลดขึ้นแรม</button>';
+    }
+    if(m.source === "user"){
+      actions += '<button class="small danger btn-delete" data-id="' + escapeHtml(m.id) + '">🗑 ลบ</button>';
+    }
+
+    var noteHtml = m.note ? '<p class="model-note" title="' + escapeHtml(m.note) + '">' + escapeHtml(m.note) + '</p>' : "";
+
+    return (
+      '<div class="card model-card" data-model-id="' + escapeHtml(m.id) + '">' +
+        '<div class="model-file">' + escapeHtml(m.file || m.id) + '</div>' +
+        '<div class="model-name">' + escapeHtml(m.name || "") + '</div>' +
+        '<div class="model-badges">' + badges.join("") + '</div>' +
+        '<div class="model-meta">' + metaParts.map(function(s){return "<span>"+s+"</span>";}).join("") + '</div>' +
+        reason +
+        noteHtml +
+        '<div class="model-actions">' + actions + '</div>' +
+        '<div class="activate-panel" id="activate-panel-' + escapeHtml(m.id) + '">' +
+          '<div class="field"><label>พอร์ต</label>' +
+            '<select class="act-port"><option value="8001">8001</option><option value="8002">8002</option></select>' +
+          '</div>' +
+          '<div class="field"><label>ctx</label><input type="number" class="act-ctx" value="' + escapeHtml(m.ctx || m.ctx_train || "") + '"></div>' +
+          '<button class="small primary act-confirm" data-id="' + escapeHtml(m.id) + '">เริ่ม</button>' +
+          '<div class="activate-log" style="display:none;"></div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function wireModelCard(m){
+    var card = document.querySelector('.model-card[data-model-id="' + cssEscape(m.id) + '"]');
+    if(!card) return;
+
+    var dlBtn = card.querySelector(".btn-download");
+    if(dlBtn) dlBtn.addEventListener("click", function(){ startDownload(m.id, dlBtn); });
+
+    var delBtn = card.querySelector(".btn-delete");
+    if(delBtn) delBtn.addEventListener("click", function(){ deleteModel(m.id, delBtn); });
+
+    var upBtn = card.querySelector(".btn-upgrade");
+    if(upBtn) upBtn.addEventListener("click", function(){ upgradeEngine(m.engine, upBtn); });
+
+    var toggleBtn = card.querySelector(".btn-activate-toggle");
+    if(toggleBtn) toggleBtn.addEventListener("click", function(){
+      var panel = document.getElementById("activate-panel-" + m.id);
+      panel.classList.toggle("open");
+    });
+
+    var confirmBtn = card.querySelector(".act-confirm");
+    if(confirmBtn) confirmBtn.addEventListener("click", function(){
+      var panel = document.getElementById("activate-panel-" + m.id);
+      var port = parseInt(panel.querySelector(".act-port").value, 10);
+      var ctx = parseInt(panel.querySelector(".act-ctx").value, 10);
+      activateModel(m.id, port, ctx, confirmBtn, panel.querySelector(".activate-log"));
+    });
+  }
+
+  function cssEscape(s){
+    return String(s).replace(/["\\]/g, "\\$&");
+  }
+
+  async function startDownload(id, btn){
+    btn.disabled = true;
+    try{
+      await apiFetch("/api/downloads", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({model_id: id})
+      });
+      showMsg("เริ่มดาวน์โหลดแล้ว", "ok");
+      pollDownloads();
+    }catch(e){
+      showMsg(e.message, "error");
+      btn.disabled = false;
+    }
+  }
+
+  async function deleteModel(id, btn){
+    if(!confirm("ลบโมเดล \"" + id + "\" ออกจากคลัง?")) return;
+    btn.disabled = true;
+    try{
+      await apiFetch("/api/models/" + encodeURIComponent(id), {method: "DELETE"});
+      showMsg("ลบโมเดลแล้ว", "ok");
+      await loadModels();
+    }catch(e){
+      showMsg(e.message, "error");
+      btn.disabled = false;
+    }
+  }
+
+  async function upgradeEngine(engineName, btn){
+    btn.disabled = true;
+    var origText = btn.textContent;
+    btn.textContent = "กำลังอัป…";
+    try{
+      var res = await apiFetch("/api/engines/upgrade", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({engine: engineName})
+      });
+      showMsg((res.message || "อัป engine สำเร็จ") +
+        (res.old_build && res.new_build ? " (" + res.old_build + " → " + res.new_build + ")" : ""), "ok");
+      await loadEngines();
+      await loadModels();
+    }catch(e){
+      showMsg(e.message, "error");
+    }finally{
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
+
+  async function activateModel(id, port, ctx, btn, logEl){
+    btn.disabled = true;
+    try{
+      var res = await apiFetch("/api/activate", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id: id, port: port, ctx: ctx, allow_main_port: false})
+      });
+      showMsg("โหลดขึ้นแรมสำเร็จ บนพอร์ต " + res.port, "ok");
+      if(logEl && res.log){
+        logEl.style.display = "block";
+        logEl.textContent = res.log;
+      }
+    }catch(e){
+      showMsg(e.message, "error");
+      if(logEl){
+        logEl.style.display = "block";
+        logEl.textContent = e.message;
+      }
+    }finally{
+      btn.disabled = false;
+    }
+  }
+
+  /* ===================== RESOLVE / ADD MODEL ===================== */
+
+  function fitsRamBadge(fits){
+    return fits ? '<span class="badge badge-ok">✅</span>' : '<span class="badge badge-warn">⚠️</span>';
+  }
+
+  async function resolveRepo(){
+    var repoInput = document.getElementById("resolve-repo");
+    var tokenInput = document.getElementById("resolve-token");
+    var btn = document.getElementById("resolve-btn");
+    var statusEl = document.getElementById("resolve-status");
+    var repoId = repoInput.value.trim();
+    if(!repoId){
+      showMsg("กรุณาใส่ HF repo id", "error");
+      return;
+    }
+    btn.disabled = true;
+    statusEl.textContent = "กำลังตรวจสอบ…";
+    document.getElementById("resolve-result").style.display = "none";
+    try{
+      var data = await apiFetch("/api/models/resolve", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({repo_id: repoId, token: tokenInput.value.trim()})
+      });
+      state.resolveResult = data;
+      state.resolveRepoId = repoId;
+      statusEl.textContent = "";
+      renderResolveResult(data);
+    }catch(e){
+      statusEl.textContent = "";
+      showMsg(e.message, "error");
+    }finally{
+      btn.disabled = false;
+    }
+  }
+
+  function renderResolveResult(data){
+    var infoEl = document.getElementById("resolve-info");
+    var infoParts = [];
+    infoParts.push("<span>arch: <b>" + escapeHtml(data.arch || "ไม่ทราบ") + "</b></span>");
+    infoParts.push("<span>ctx_train: <b>" + escapeHtml(data.ctx_train || "-") + "</b></span>");
+    if(data.gated){
+      infoParts.push('<span style="color:var(--orange);">🔒 repo นี้เป็น gated — ถ้าตรวจสอบไม่ผ่าน ให้ใส่ HF token แล้วลองใหม่</span>');
+    }
+    infoEl.innerHTML = infoParts.join("");
+
+    var tbody = document.getElementById("resolve-tbody");
+    var quants = data.quants || [];
+    if(quants.length === 0){
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--sub);">ไม่พบ quant ในรีโปนี้</td></tr>';
+    }else{
+      tbody.innerHTML = quants.map(function(q, idx){
+        return "<tr>" +
+          "<td>" + escapeHtml(q.key) + "</td>" +
+          "<td>" + escapeHtml(q.shard_count || (q.files||[]).length) + " ไฟล์</td>" +
+          "<td>" + escapeHtml(fmtGB(q.total_gb)) + "</td>" +
+          "<td>" + fitsRamBadge(q.fits_ram) + "</td>" +
+          "<td>" + compatBadge(q.compat) + "</td>" +
+          '<td><button class="small primary btn-add-quant" data-idx="' + idx + '">➕ เพิ่มเข้าคลัง</button></td>' +
+        "</tr>";
+      }).join("");
+    }
+
+    var companions = data.companions || [];
+    var existingCompanions = document.getElementById("resolve-companions");
+    if(existingCompanions) existingCompanions.remove();
+    if(companions.length > 0){
+      var p = document.createElement("p");
+      p.id = "resolve-companions";
+      p.className = "companions";
+      p.textContent = "ไฟล์เสริม (ไม่รวมอัตโนมัติ): " + companions.map(function(c){
+        return basename(c.path) + " (" + fmtGB(c.size_gb) + ")";
+      }).join(", ");
+      document.getElementById("resolve-result").insertBefore(p, document.getElementById("resolve-tbody").closest(".table-scroll").nextSibling);
+    }
+
+    document.getElementById("resolve-result").style.display = "block";
+
+    tbody.querySelectorAll(".btn-add-quant").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var q = quants[parseInt(btn.dataset.idx, 10)];
+        onAddQuantClick(q, btn);
+      });
+    });
+
+    // reset advanced panel
+    document.getElementById("advanced-toggle").checked = false;
+    document.getElementById("advanced-form").classList.remove("open");
+  }
+
+  function buildGuessedPayload(quant){
+    var repoId = state.resolveRepoId;
+    var repoName = repoId.split("/").pop();
+    var firstFile = (quant.files && quant.files[0]) ? basename(quant.files[0].path) : "";
+    var dl = (quant.files || []).map(function(f){
+      return "https://huggingface.co/" + repoId + "/resolve/main/" + f.path;
+    });
+    return {
+      id: slugify(repoName) + "-" + slugify(quant.key),
+      name: repoId + " (" + quant.key + ")",
+      engine: "llamacpp",
+      path: "~/models/gguf/" + repoName + "/" + firstFile,
+      ctx: state.resolveResult.ctx_train || 0,
+      args: "",
+      need_gb: Math.ceil(quant.total_gb || 0),
+      arch: state.resolveResult.arch || "",
+      ctx_train: state.resolveResult.ctx_train || 0,
+      source_repo: repoId,
+      note: "",
+      dl: dl
+    };
+  }
+
+  var advancedHidden = null; // {arch, ctx_train, source_repo, note, dl}
+
+  function onAddQuantClick(quant, btn){
+    var payload = buildGuessedPayload(quant);
+    var advanced = document.getElementById("advanced-toggle").checked;
+    if(advanced){
+      document.getElementById("adv-id").value = payload.id;
+      document.getElementById("adv-name").value = payload.name;
+      document.getElementById("adv-engine").value = payload.engine;
+      document.getElementById("adv-path").value = payload.path;
+      document.getElementById("adv-ctx").value = payload.ctx;
+      document.getElementById("adv-args").value = payload.args;
+      document.getElementById("adv-need-gb").value = payload.need_gb;
+      advancedHidden = {
+        arch: payload.arch,
+        ctx_train: payload.ctx_train,
+        source_repo: payload.source_repo,
+        note: payload.note,
+        dl: payload.dl
+      };
+      var form = document.getElementById("advanced-form");
+      form.classList.add("open");
+      form.scrollIntoView({behavior: "smooth", block: "center"});
+    }else{
+      submitAddModel(payload, btn);
+    }
+  }
+
+  document.getElementById("advanced-toggle").addEventListener("change", function(){
+    document.getElementById("advanced-form").classList.toggle("open", this.checked);
+  });
+
+  document.getElementById("adv-submit-btn").addEventListener("click", function(){
+    var btn = this;
+    var payload = {
+      id: document.getElementById("adv-id").value.trim(),
+      name: document.getElementById("adv-name").value.trim(),
+      engine: document.getElementById("adv-engine").value,
+      path: document.getElementById("adv-path").value.trim(),
+      ctx: parseInt(document.getElementById("adv-ctx").value, 10) || 0,
+      args: document.getElementById("adv-args").value,
+      need_gb: parseInt(document.getElementById("adv-need-gb").value, 10) || 0
+    };
+    if(advancedHidden){
+      payload.arch = advancedHidden.arch;
+      payload.ctx_train = advancedHidden.ctx_train;
+      payload.source_repo = advancedHidden.source_repo;
+      payload.note = advancedHidden.note;
+      payload.dl = advancedHidden.dl;
+    }
+    if(!payload.id || !payload.path){
+      showMsg("กรุณากรอก id และ path ให้ครบ", "error");
+      return;
+    }
+    submitAddModel(payload, btn);
+  });
+
+  async function submitAddModel(payload, btn){
+    if(btn) btn.disabled = true;
+    try{
+      await apiFetch("/api/models", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      showMsg("เพิ่ม \"" + payload.id + "\" เข้าคลังแล้ว", "ok");
+      document.getElementById("advanced-form").classList.remove("open");
+      document.getElementById("advanced-toggle").checked = false;
+      await loadModels();
+    }catch(e){
+      showMsg(e.message, "error");
+    }finally{
+      if(btn) btn.disabled = false;
+    }
+  }
+
+  document.getElementById("resolve-btn").addEventListener("click", resolveRepo);
+  document.getElementById("resolve-repo").addEventListener("keydown", function(e){
+    if(e.key === "Enter") resolveRepo();
+  });
+
+  /* ===================== DOWNLOADS ===================== */
+
+  function modelLabel(modelId){
+    var m = state.models.find(function(x){ return x.id === modelId; });
+    return m ? (m.file || m.name || modelId) : modelId;
+  }
+
+  var STATE_LABEL = {
+    queued: "รอคิว", active: "กำลังโหลด", paused: "หยุดชั่วคราว",
+    done: "เสร็จแล้ว", error: "ผิดพลาด", cancelled: "ยกเลิกแล้ว"
+  };
+  var STATE_COLOR = {
+    queued: "var(--sub)", active: "var(--accent)", paused: "var(--orange)",
+    done: "var(--green)", error: "var(--red)", cancelled: "var(--sub)"
+  };
+
+  function renderJobCard(job){
+    var percent = job.percent !== undefined && job.percent !== null ? job.percent : 0;
+    var stateClass = "state-" + job.state;
+    var actions = "";
+    if(job.state === "active" || job.state === "queued"){
+      actions += '<button class="small btn-job" data-action="pause" data-id="' + escapeHtml(job.id) + '">⏸ หยุด</button>';
+    }
+    if(job.state === "paused"){
+      actions += '<button class="small btn-job" data-action="resume" data-id="' + escapeHtml(job.id) + '">▶ ต่อ</button>';
+    }
+    if(["queued","active","paused"].indexOf(job.state) !== -1){
+      actions += '<button class="small danger btn-job" data-action="cancel" data-id="' + escapeHtml(job.id) + '">✕ ยกเลิก</button>';
+    }
+
+    var filesHtml = (job.files || []).map(function(f){
+      var row = '<div class="job-file-row"><span>' + escapeHtml(basename(f.dest)) + " — " + escapeHtml(STATE_LABEL[f.state] || f.state) +
+        " (" + fmtBytesGB(f.done_bytes) + " / " + fmtBytesGB(f.total_bytes) + ")" + '</span></div>';
+      if(f.error){
+        row = '<div class="job-file-row"><span>' + escapeHtml(basename(f.dest)) + '</span>' +
+          '<span class="job-file-error">' + escapeHtml(f.error) + '</span></div>';
+      }
+      return row;
+    }).join("");
+
+    return (
+      '<div class="card job-card" data-job-id="' + escapeHtml(job.id) + '">' +
+        '<div class="job-head">' +
+          '<div class="job-title">' + escapeHtml(modelLabel(job.model_id)) + '</div>' +
+          '<div class="job-state" style="color:' + STATE_COLOR[job.state] + ';">' + escapeHtml(STATE_LABEL[job.state] || job.state) + '</div>' +
+        '</div>' +
+        '<div class="progress-track"><div class="progress-fill ' + stateClass + '" style="width:' + Math.min(100, Math.max(0, percent)) + '%;"></div></div>' +
+        '<div class="job-meta">' +
+          '<span>' + fmtBytesGB(job.done_bytes) + ' / ' + fmtBytesGB(job.total_bytes) + '</span>' +
+          '<span>' + escapeHtml(Math.round(percent)) + '%</span>' +
+          '<span>' + fmtSpeed(job.speed_bps) + '</span>' +
+          '<span>เหลือ ' + fmtEta(job.eta_seconds) + '</span>' +
+        '</div>' +
+        (filesHtml ? '<div class="job-files">' + filesHtml + '</div>' : "") +
+        '<div class="job-actions">' + actions + '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderDownloads(jobs){
+    var list = document.getElementById("downloads-list");
+    var statusEl = document.getElementById("downloads-status");
+    if(!jobs || jobs.length === 0){
+      list.innerHTML = "";
+      statusEl.style.display = "block";
+      statusEl.textContent = "ยังไม่มีงานดาวน์โหลด";
+      return;
+    }
+    statusEl.style.display = "none";
+    list.innerHTML = jobs.map(renderJobCard).join("");
+    list.querySelectorAll(".btn-job").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        jobAction(btn.dataset.id, btn.dataset.action, btn);
+      });
+    });
+  }
+
+  async function jobAction(jobId, action, btn){
+    if(action === "cancel" && !confirm("ยกเลิกงานดาวน์โหลดนี้?")) return;
+    btn.disabled = true;
+    try{
+      await apiFetch("/api/downloads/" + encodeURIComponent(jobId) + "/" + action, {method: "POST"});
+      await pollDownloads();
+    }catch(e){
+      showMsg(e.message, "error");
+      btn.disabled = false;
+    }
+  }
+
+  async function pollDownloads(){
+    try{
+      var data = await apiFetch("/api/downloads");
+      var jobs = data.jobs || [];
+      renderDownloads(jobs);
+      var hasActive = jobs.some(function(j){
+        return ["queued","active","paused"].indexOf(j.state) !== -1;
+      });
+      if(state.downloadsTimer) clearTimeout(state.downloadsTimer);
+      if(hasActive){
+        state.downloadsTimer = setTimeout(pollDownloads, 3000);
+      }
+    }catch(e){
+      document.getElementById("downloads-status").style.display = "block";
+      document.getElementById("downloads-status").textContent = "โหลดสถานะดาวน์โหลดไม่ได้: " + e.message;
+    }
+  }
+
+  /* ===================== INIT ===================== */
+
+  async function init(){
+    await Promise.all([loadHealth(), loadEngines()]);
+    await loadModels();
+    await pollDownloads();
+  }
+
+  init();
+
+})();
+</script>
+
+</body>
+</html>
