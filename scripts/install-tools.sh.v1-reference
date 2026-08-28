@@ -1,0 +1,161 @@
+#!/bin/bash
+# ติดตั้งเครื่องมือที่ขาด — เรียกจากหน้า AI Server (รันแบบไม่มี tty, รายงานทีละบรรทัดให้ UI โชว์สด)
+set -u
+BASE="https://aiserver.in.th/dl.php"
+APT_PKGS=""
+
+have_sudo() { sudo -n true 2>/dev/null; }
+record_pack() {  # record_pack <ชื่อ pack> <ไฟล์ tgz> — จด sha ของ pack ที่ติดตั้งไว้ (hub ใช้เทียบกับรุ่นบน server)
+  local NAME=$1 TGZ=$2
+  local SHA; SHA=$(sha256sum "$TGZ" 2>/dev/null | cut -c1-8)
+  [ -n "$SHA" ] || return 0
+  python3 - "$NAME" "$SHA" <<'PY' 2>/dev/null || true
+import json, os, sys
+p = os.path.expanduser("~/.aiserver/packs.json")
+try: d = json.load(open(p))
+except Exception: d = {}
+d[sys.argv[1]] = sys.argv[2]
+os.makedirs(os.path.dirname(p), exist_ok=True)
+json.dump(d, open(p, "w"))
+PY
+}
+docker_ok() { docker info >/dev/null 2>&1; }
+docker_guard() {  # docker_guard <url คู่มือของ software นั้น> — คืน 0 ถ้าใช้ docker ได้
+  docker_ok && return 0
+  echo "  ⚠️ ใช้ docker ไม่ได้ — user ยังไม่อยู่ใน group docker (ทำครั้งเดียวต่อเครื่อง)"
+  echo "  วิธีแก้ + คำแนะนำ: ${1:-https://aiserver.in.th/aiserver-guide/#trouble}"
+  echo "  คำสั่ง: sudo usermod -aG docker \$USER   (เสร็จแล้ว logout/login ใหม่ แล้วกดติดตั้งซ้ำ)"
+  return 1
+}
+
+# รอบแรก: รวมกลุ่ม apt แล้วติดตั้ง "ก่อน" ตัวอื่น — หลายตัว (เช่น studio stack) ต้องใช้ aria2/curl
+for t in "$@"; do
+  case "$t" in
+    git|curl|jq|tmux|ffmpeg) APT_PKGS="$APT_PKGS $t";;
+    aria2c)  APT_PKGS="$APT_PKGS aria2";;
+    python3) APT_PKGS="$APT_PKGS python3";;
+    pip3)    APT_PKGS="$APT_PKGS python3-pip";;
+    nvcc)    APT_PKGS="$APT_PKGS cuda-toolkit";;
+    docker)  APT_PKGS="$APT_PKGS docker.io";;
+  esac
+done
+if [ -n "${APT_PKGS# }" ]; then
+  echo "▶ apt: ติดตั้ง$APT_PKGS ..."
+  if have_sudo; then
+    sudo -n apt-get update -qq >/dev/null 2>&1
+    # shellcheck disable=SC2086
+    sudo -n apt-get install -y -qq $APT_PKGS >/dev/null 2>&1 \
+      && echo "  ✅ apt เสร็จ" || echo "  ❌ apt ล้มเหลว (ดู log ระบบ)"
+  else
+    echo "  ⚠️ ขั้นนี้ต้องใส่รหัส sudo — ระบบทำแทนไม่ได้ (ทำครั้งเดียว)"
+    echo "  วิธีแก้ + คำแนะนำ: https://aiserver.in.th/aiserver-guide/#trouble"
+    echo "  คำสั่ง: sudo apt install -y$APT_PKGS   (เสร็จแล้วกดติดตั้งซ้ำ)"
+  fi
+fi
+
+# รอบสอง: ตัวพิเศษ (pack/pip/ดาวน์โหลด) — ได้ใช้เครื่องมือจาก apt แล้ว
+for t in "$@"; do
+  case "$t" in
+    git|curl|jq|tmux|ffmpeg|aria2c|python3|pip3|nvcc|docker) : ;;   # จัดการไปแล้วรอบแรก
+    uv)
+      echo "▶ uv: กำลังติดตั้ง..."
+      if curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1; then
+        echo "  ✅ uv ติดตั้งแล้ว (~/.local/bin)"
+      else echo "  ❌ uv ติดตั้งไม่สำเร็จ"; fi;;
+    ollama)
+      echo "▶ ollama: กำลังติดตั้ง..."
+      if have_sudo; then
+        curl -fsSL https://ollama.com/install.sh | sudo -n sh >/dev/null 2>&1 \
+          && echo "  ✅ ollama ติดตั้งแล้ว" || echo "  ❌ ollama ติดตั้งไม่สำเร็จ"
+      else
+        echo "  ⚠️ ต้องใช้รหัส sudo — รันเองใน terminal: curl -fsSL https://ollama.com/install.sh | sh"
+      fi;;
+    llama-server)
+      if [ -d "$HOME/llama.cpp/.git" ]; then
+        echo "▶ llama-server: เครื่องนี้ build เองจาก source (~/llama.cpp) — ข้าม pack (กันทับ build ที่ใหม่กว่า)"
+        continue
+      fi
+      echo "▶ llama-server: ดาวน์โหลด prebuilt สำหรับ DGX Spark (GB10)..."
+      CODE="$(cat "$HOME/.aiserver/license" 2>/dev/null || true)"
+      if [ -z "$CODE" ]; then echo "  ❌ ไม่พบ license (~/.aiserver/license) — ติดตั้ง AI Server ให้เสร็จก่อน"; else
+        MID="$(printf '%s' "$(cat /etc/machine-id 2>/dev/null)$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)" | sha256sum | cut -c1-16)"
+        mkdir -p "$HOME/llama.cpp/build/bin"
+        if curl -fsSL "$BASE?f=llama-pack-gb10.tar.gz&code=$CODE&mid=$MID" -o /tmp/llama-pack.tgz; then
+          record_pack llama-pack-gb10 /tmp/llama-pack.tgz
+          tar xzf /tmp/llama-pack.tgz -C "$HOME/llama.cpp/build/bin" && rm -f /tmp/llama-pack.tgz
+          if LD_LIBRARY_PATH="$HOME/llama.cpp/build/bin" "$HOME/llama.cpp/build/bin/llama-server" --version >/dev/null 2>&1; then
+            echo "  ✅ llama-server พร้อมใช้ ($HOME/llama.cpp/build/bin)"
+          else echo "  ❌ binary รันไม่ได้บนเครื่องนี้"; fi
+        else echo "  ❌ ดาวน์โหลดไม่สำเร็จ (เช็คเน็ต/license)"; fi
+      fi;;
+    ds4-server)
+      echo "▶ ds4-server: ดาวน์โหลด engine DeepSeek (prebuilt GB10)..."
+      CODE="$(cat "$HOME/.aiserver/license" 2>/dev/null || true)"
+      if [ -z "$CODE" ]; then echo "  ❌ ไม่พบ license (~/.aiserver/license)"; else
+        MID="$(printf '%s' "$(cat /etc/machine-id 2>/dev/null)$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)" | sha256sum | cut -c1-16)"
+        mkdir -p "$HOME/ds4" "$HOME/.local/bin"
+        if curl -fsSL "$BASE?f=ds4-pack-gb10.tar.gz&code=$CODE&mid=$MID" -o /tmp/ds4-pack.tgz; then
+          record_pack ds4-pack-gb10 /tmp/ds4-pack.tgz
+          tar xzf /tmp/ds4-pack.tgz -C /tmp ds4-server ds4-serve \
+            && mv /tmp/ds4-server "$HOME/ds4/ds4-server" && mv /tmp/ds4-serve "$HOME/.local/bin/ds4-serve" \
+            && chmod +x "$HOME/ds4/ds4-server" "$HOME/.local/bin/ds4-serve" && rm -f /tmp/ds4-pack.tgz
+          [ -x "$HOME/ds4/ds4-server" ] && echo "  ✅ ds4-server พร้อมใช้ (ตัวโมเดล DeepSeek ดูวิธีในคู่มือ: aiserver.in.th/aiserver-guide)" \
+            || echo "  ❌ ติดตั้งไม่สำเร็จ"
+        else echo "  ❌ ดาวน์โหลดไม่สำเร็จ (เช็คเน็ต/license)"; fi
+      fi;;
+    thclaws)
+      echo "▶ thClaws: เช็ค release ล่าสุด (ทางการ, aarch64)..."
+      TAG="$(curl -fsSL https://api.github.com/repos/thClaws/thClaws/releases/latest 2>/dev/null | grep -oP '"tag_name": *"\K[^"]+' || true)"
+      CUR="$(thclaws --version 2>/dev/null | head -1 | grep -oP '\d+\.\d+\.\d+' || true)"
+      if [ -n "$CUR" ] && { [ -z "$TAG" ] || [ "v$CUR" = "$TAG" ]; }; then
+        echo "  ✅ เป็นรุ่นล่าสุดแล้ว: $CUR"
+      else
+        [ -z "$TAG" ] && TAG="v0.114.0"
+        [ -n "$CUR" ] && echo "  ⬆️ อัปเดต $CUR → $TAG"
+        U="https://github.com/thClaws/thClaws/releases/download/$TAG/thclaws-$TAG-aarch64-unknown-linux-gnu.tar.gz"
+        mkdir -p "$HOME/.local/bin"
+        if curl -fsSL "$U" -o /tmp/thclaws.tgz && tar xzf /tmp/thclaws.tgz -C /tmp thclaws; then
+          # เก็บของเก่าไว้ย้อน (thclaws-<ver>) — process ที่รันอยู่ใช้ binary เดิมต่อจนกว่าจะ restart
+          [ -n "$CUR" ] && [ -x "$HOME/.local/bin/thclaws" ] && cp -f "$HOME/.local/bin/thclaws" "$HOME/.local/bin/thclaws-$CUR"
+          mv /tmp/thclaws "$HOME/.local/bin/thclaws" && chmod +x "$HOME/.local/bin/thclaws" && rm -f /tmp/thclaws.tgz
+          if "$HOME/.local/bin/thclaws" --version >/dev/null 2>&1; then
+            echo "  ✅ thClaws $TAG พร้อมใช้ (~/.local/bin)"
+            # service ของ AI Server (:8470) รันอยู่ → restart ให้ใช้รุ่นใหม่ (thClaws ตัวอื่นที่รันจาก binary เดิมไม่ถูกแตะ)
+            if curl -s -o /dev/null -m 2 "http://127.0.0.1:${THCLAWS_PORT:-8470}/"; then
+              bash "$(dirname "$0")/../services/thclaws.sh" restart >/dev/null 2>&1 && echo "  🔄 restart thClaws :${THCLAWS_PORT:-8470} แล้ว"
+            fi
+          else echo "  ❌ binary รันไม่ได้"; fi
+        else echo "  ❌ ดาวน์โหลดจาก GitHub ไม่สำเร็จ"; fi
+      fi;;
+    "vllm (docker image)")
+      echo "▶ vLLM (โหมดหลายผู้ใช้): image 22GB — ติดตั้งเมื่อต้องใช้จริงเท่านั้น"
+      docker_guard "https://aiserver.in.th/aiserver-vllm/" || continue
+      echo "  วิธีติดตั้ง + คำแนะนำ: https://aiserver.in.th/aiserver-vllm/"
+      echo "  คำสั่ง: docker pull nvcr.io/nvidia/vllm:26.07-py3";;
+    "litellm (gateway)")
+      echo "▶ litellm: กำลังติดตั้งลง venv ของ AI Server..."
+      VENV="$(dirname "$0")/../venv"
+      if [ -x "$VENV/bin/pip" ]; then
+        if "$VENV/bin/pip" -q install 'litellm[proxy]==1.91.2' >/dev/null 2>&1; then
+          echo "  ✅ litellm พร้อมใช้"
+          # ถ้ามี config แล้ว (hub สร้างไว้) เปิด gateway เลย ไม่ต้องรอโหลดโมเดลรอบถัดไป
+          [ -f "$HOME/litellm/config.yaml" ] && bash "$(dirname "$0")/../services/litellm.sh" restart < /dev/null | sed 's/^/  /'
+        else echo "  ❌ pip ติดตั้งไม่สำเร็จ"; fi
+      else
+        echo "  ❌ ไม่พบ venv ของ AI Server ($VENV)"
+      fi;;
+    "studio stack (ComfyUI)")
+      echo "▶ studio stack: ติดตั้ง ComfyUI backend (image ~17GB — ใช้เวลาตามเน็ต) ..."
+      command -v aria2c >/dev/null 2>&1 || {
+        echo "  ⚠️ ข้ามไปก่อน — ต้องได้ aria2 จากขั้น apt ด้านบน"
+        echo "  วิธีติดตั้ง + คำแนะนำ: https://aiserver.in.th/aiserver-studio/"
+        echo "  คำสั่ง: sudo apt install -y aria2   (เสร็จแล้วกดติดตั้งซ้ำ)"; continue; }
+      docker_guard "https://aiserver.in.th/aiserver-studio/" || continue
+      echo "  หมายเหตุ: นี่คือตัวโปรแกรม studio — โมเดล gen เสียง/วิดีโอ ดาวน์โหลดทีหลังตอนใช้จริง (install-studio.sh)"
+      bash "$(dirname "$0")/install-studio.sh" core \
+        && echo "  ✅ studio stack พร้อม — โหลดโมเดลรายชุด: bash ~/aiserver/scripts/install-studio.sh voice|lipsync|h3" \
+        || echo "  ❌ ติดตั้ง studio stack ไม่สำเร็จ (ดูบรรทัดบน)";;
+    *) echo "▶ ไม่รู้จัก: $t";;
+  esac
+done
+echo "── เสร็จสิ้น ──"

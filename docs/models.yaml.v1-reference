@@ -1,0 +1,112 @@
+# AI Server — model registry (โมเดล LLM ที่สลับได้ บนพอร์ต 8000-8009)
+# path ใช้ ~ (ทำงานได้ทุกเครื่อง/ทุก user) · dl = ลิงก์ดาวน์โหลดอัตโนมัติเมื่อไฟล์ไม่อยู่ (คั่นด้วยช่องว่าง)
+# note: ตัวเลข ThaiEval-2026 v2 + tok/s วัดจริงบน GB10
+models:
+  - id: ds4-flash-unsloth-iq2xxs
+    name: "DeepSeek-V4-Flash IQ2 (Unsloth)"
+    engine: llamacpp
+    path: ~/models/gguf/deepseek-v4-flash-0731/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00001-of-00003.gguf
+    # DeepSeek MLA = KV บีบอัด (~9GB ที่ 128K) → รับ context ยาวได้คุ้ม · ตั้ง ctx ชัดเจน (เดิมไม่มี = fallback 65536)
+    ctx: 131072
+    need_gb: 105
+    args: ""
+    dl: "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00001-of-00003.gguf https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00002-of-00003.gguf https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00003-of-00003.gguf"
+    note: "DeepSeek-V4-Flash quant ทางการของ Unsloth (UD-IQ2_XXS) · โหลดได้เลย ~91GB (แรมไม่พอ→เคลียร์ studio ก่อน) · รันบน llama-server"
+
+  # TD ของเรา (ds4/DSpark) — เอาออกชั่วคราวจนกว่าจะ upload ไฟล์ให้ลูกค้า (~1 วัน)
+  # กลับมา re-enable: uncomment + (ถ้ามี dl หลัง upload ขึ้น hub ให้ใส่ dl:)
+  # - id: ds4-flash-iq2
+  #   name: "DeepSeek-V4-Flash IQ2 + DSpark (ds4 · TD ของเรา)"
+  #   engine: ds4
+  #   path: ~/ds4/gguf/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf
+  #   need_gb: 98
+  #   args: ""
+  #   note: "แชมป์คุณภาพไทย ThaiEval 87.6% · quant พิเศษของเรา (TD) ~87GB"
+
+  - id: qwen38-ud-q4-mtp
+    name: "Qwen3.8-27B UD-Q4_K_XL + MTP"
+    engine: llamacpp
+    path: ~/models/gguf/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf
+    ctx: 262144
+    # Qwen3.8-27B: 16 full-attn layers × 4 KV heads × 256 dim × 2 (K,V) × 2 bytes f16 = 64KB/token → 256K ctx = 17GB
+    kv_kb_per_token: 64
+    need_gb: 55
+    args: "-md ~/models/gguf/qwen3.8-27b/mtp-Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp"
+    dl: "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_XL.gguf https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/mtp-Qwen3.8-27B-Q8_0.gguf"
+    note: "sweet spot — ThaiEval 84.1% · ~14 tok/s ไทย · VLM+ctx ยาว · ไฟล์ ~21GB"
+
+  - id: qwen38-ud-q2-mtp
+    name: "Qwen3.8-27B UD-Q2_K_XL + MTP"
+    engine: llamacpp
+    path: ~/models/gguf/qwen3.8-27b/Qwen3.8-27B-UD-Q2_K_XL.gguf
+    ctx: 262144
+    # Qwen3.8-27B: 16 full-attn layers × 4 KV heads × 256 dim × 2 (K,V) × 2 bytes f16 = 64KB/token → 256K ctx = 17GB
+    kv_kb_per_token: 64
+    need_gb: 48
+    args: "-md ~/models/gguf/qwen3.8-27b/mtp-Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp"
+    dl: "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q2_K_XL.gguf https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/mtp-Qwen3.8-27B-Q8_0.gguf"
+    note: "สายความเร็ว — ThaiEval 81.7% · 18-23 tok/s ไทย · ไฟล์ ~13GB"
+
+  - id: qwen38-q8-mtp
+    name: "Qwen3.8-27B Q8_0 + MTP"
+    engine: llamacpp
+    path: ~/models/gguf/qwen3.8-27b/Qwen3.8-27B-Q8_0.gguf
+    ctx: 262144
+    # Qwen3.8-27B: 16 full-attn layers × 4 KV heads × 256 dim × 2 (K,V) × 2 bytes f16 = 64KB/token → 256K ctx = 17GB
+    kv_kb_per_token: 64
+    need_gb: 65
+    args: "-md ~/models/gguf/qwen3.8-27b/mtp-Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp"
+    dl: "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q8_0.gguf https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/mtp-Qwen3.8-27B-Q8_0.gguf"
+    note: "เพดานคุณภาพตระกูล GGUF — ThaiEval 84.7% · ~9.6 tok/s ไทย (MTP) · ไฟล์ ~30GB"
+
+  - id: qwen36-td-q2k
+    name: "Qwen3.6-35B-A3B TD-Q2K (MoE)"
+    engine: llamacpp
+    path: ~/gguf/q36-gguf/Qwen3.6-35B-A3B-TD-Q2K.gguf
+    args: ""
+    note: "MoE เร็ว — ThaiEval v1 79.9% · quant พิเศษของเรา (ยังไม่มีดาวน์โหลดอัตโนมัติ)"
+
+  - id: muse-glimmer-30b
+    name: "Muse Glimmer 30B (Meta · VLM + drafter)"
+    engine: llamacpp
+    path: ~/models/gguf/muse-glimmer/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf
+    ctx: 65536
+    need_gb: 40
+    args: "--mmproj ~/models/gguf/muse-glimmer/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf -md ~/models/gguf/muse-glimmer/dflash-Muse-Glimmer-30B-Q4_K_M.gguf --temp 1.0 --top-p 0.95 --top-k 64"
+    dl: "https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/main/dflash-Muse-Glimmer-30B-Q4_K_M.gguf"
+    note: "โมเดล agentic+อ่านภาพจาก Meta · ~14 tok/s · ต้องใช้ llama-server b10353 ขึ้นไป (รุ่นเก่าโหลดไม่ได้)"
+
+  - id: qwen38-nvfp4-vllm
+    name: "Qwen3.8-27B NVFP4 (vLLM + MTP)"
+    engine: vllm
+    path: ~/models/nvfp4/qwen3.8-27b-nvfp4
+    need_gb: 32
+    args: ""
+    # โฟลเดอร์ทั้ง HF repo (safetensors + config + tokenizer) → โหลดลง path เอง (ต้องติดตั้ง vLLM ก่อนถึงรันได้)
+    dl: "https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/config.json https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/generation_config.json https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/model.safetensors https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/model.safetensors.index.json https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/model_mtp.safetensors https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/tokenizer.json https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/tokenizer_config.json https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/vocab.json https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/chat_template.jinja https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/preprocessor_config.json https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/video_preprocessor_config.json"
+    note: "โหมดเสิร์ฟหลายผู้ใช้ — batch-4 ≈ 30 tok/s รวม · กินแรมมาก ระบบจะเคลียร์ให้ก่อนสตาร์ท · ต้องติดตั้ง vLLM ก่อน (🧰 ซอฟต์แวร์)"
+
+  - id: qwen3.8-flash-next-udq2
+    name: "Qwen3.8-Flash-Next UD-Q2 (176B MoE)"
+    engine: llamacpp
+    path: ~/models/gguf/flashnext-udq2/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf
+    # KV/token: 12 full-attn layers (36 SSM layers = state คงที่ ไม่โตตาม ctx)
+    # → ให้ need_gb โตตาม ctx ที่ลูกค้าตั้ง (RAM guard จะได้ตรง ไม่ปล่อยให้ตั้งเกินแล้ว OOM)
+    kv_kb_per_token: 48
+    ctx: 32768
+    need_gb: 82
+    # ⚠️ ห้ามใส่ -c ใน args — จะทับ CTX ที่ลูกค้าตั้ง (llamacpp.sh ใส่ -c จาก ctx:/UI ให้แล้ว)
+    # ⚠️ ห้ามใส่ comment ต่อท้ายบรรทัด field — parser (load_models) ไม่ strip inline # → หลุดเป็น arg
+    args: ""
+    dl: "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00002-of-00003.gguf https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00003-of-00003.gguf"
+    note: "ไทยเยี่ยม ThaiEval v3 0.94 (แนะนำใส่ system prompt ไทย) · MoE 176B active 6B ~32 tok/s · quant ทางการ Unsloth ~79GB (เคลียร์ studio ก่อนถ้าแรมไม่พอ) · ⚠️ ต้องอัป llama-server รุ่นใหม่ก่อน (🧰 ซอฟต์แวร์ → รองรับ arch qwen4_exp; รุ่นเก่าโหลดไม่ได้)"
+
+  - id: glm-5.3-flash-udq1
+    name: "GLM-5.3-Flash UD-IQ1 (320B MoE · multimodal)"
+    engine: llamacpp
+    path: ~/models/gguf/glm-5.3-flash/GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf
+    ctx: 32768
+    need_gb: 100
+    args: ""
+    dl: "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00002-of-00003.gguf https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00003-of-00003.gguf"
+    note: "GLM-5.3-Flash (Zhipu · MIT) 320B active 18B · UD-IQ1 1-bit ~87GB (เคลียร์ studio ก่อน แรมตึง ~100GB) · ⚠️ ชอบคิดยาว → ใส่ system prompt 'ตอบตรงๆ สั้นๆ' ให้ตอบตรง · ต้องอัป llama-server รุ่นใหม่ก่อน (🧰 ซอฟต์แวร์ → รองรับ glm5next; รุ่นเก่าโหลดไม่ได้)"
