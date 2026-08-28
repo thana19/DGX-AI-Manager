@@ -102,7 +102,7 @@ models:
     need_gb: 32
     args: ""
     requires:
-      vllm: "26.07"
+      vllm_image: "aiserver-vllm:26.07"
     dl:
       - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/config.json
       - https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4/resolve/main/generation_config.json
