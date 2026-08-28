@@ -86,6 +86,23 @@ def check_all() -> list[SoftwareItem]:
     return items
 
 
+def _meminfo_gb(key: str) -> float | None:
+    """อ่านค่าจาก /proc/meminfo (KiB) → GB — ไม่มี /proc/meminfo (เช่นบน Mac) คืน None"""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(key):
+                    return round(int(line.split()[1]) / 1048576, 1)
+    except OSError:
+        return None
+    return None
+
+
+def mem_available_gb() -> float | None:
+    """แรมที่ขอใช้ได้จริงตอนนี้ — MemAvailable ไม่ใช่ MemFree (buff/cache คืนได้ นับรวมด้วย)"""
+    return _meminfo_gb("MemAvailable")
+
+
 def mem_total_gb() -> float | None:
     """อ่าน MemTotal จาก /proc/meminfo (KiB) → GB — ไม่มี /proc/meminfo (เช่นบน Mac) คืน None"""
     try:

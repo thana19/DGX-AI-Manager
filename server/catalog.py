@@ -279,3 +279,18 @@ def lint(entries: list[ModelEntry]) -> list[str]:
                     )
 
     return problems
+
+
+def need_gb(entry: ModelEntry, ctx: int | None = None) -> float:
+    """งบแรมที่โมเดลนี้ต้องใช้ (GB) — สูตรเดียวกับ v1 ที่วัดจริงบน GB10 มาแล้ว
+
+    รู้ KV ต่อ token → weights x1.05 + KV ตาม ctx + compute buffer 3GB
+    ไม่รู้ → ใช้ need_gb ที่วัดมือไว้ · ไม่มีอีก → ประมาณจากขนาดไฟล์ x1.15 + 3
+    """
+    size = disk_bytes(entry) / 1e9
+    effective_ctx = ctx or entry.ctx
+    if entry.kv_kb_per_token and effective_ctx:
+        return size * 1.05 + effective_ctx * entry.kv_kb_per_token / 1e6 + 3
+    if entry.need_gb:
+        return float(entry.need_gb)
+    return size * 1.15 + 3

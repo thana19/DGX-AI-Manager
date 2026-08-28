@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 from typing import Any
@@ -341,6 +342,29 @@ def _activate_log_path(engine_name: str, port: int) -> str | None:
     return None
 
 
+_RAM_SAFETY_GB = 8  # กันชนให้ OS + buffer (ค่าเดียวกับ SAFETY_GB ของ v1)
+
+
+def _ram_hogs() -> str:
+    """ชื่อ engine ที่กำลังถือแรมอยู่ — เอาไปบอกผู้ใช้ว่าต้องหยุดอะไรก่อน"""
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "rss,args"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    hogs = []
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        gb = int(parts[0]) / 1048576
+        if gb >= 5 and ("llama-server" in parts[1] or "ds4-server" in parts[1]):
+            port = re.search(r"--port\s+(\d+)", parts[1])
+            hogs.append(f"llama-server :{port.group(1) if port else '?'} (~{gb:.0f} GB)")
+    return " และ ".join(hogs)
+
+
 @app.post("/api/activate")
 def activate(req: ActivateReq) -> dict[str, Any]:
     if req.port == _MAIN_LLM_PORT and not req.allow_main_port:
@@ -370,6 +394,22 @@ def activate(req: ActivateReq) -> dict[str, Any]:
     if compat.status == engines.Compat.NEEDS_UPGRADE:
         raise HTTPException(status_code=409, detail=compat.reason)
 
+    # ด่านแรม: โมเดลใหญ่กว่าแรมที่เหลือ = ตายตอนโหลดแน่นอน บอกก่อนดีกว่าปล่อยให้ OOM
+    # (กันชน 8GB สำหรับ OS + buffer — ค่าเดียวกับ SAFETY_GB ของ v1)
+    avail = software.mem_available_gb()
+    if avail is not None:
+        want = catalog.need_gb(entry, req.ctx)
+        if want > avail - _RAM_SAFETY_GB:
+            busy = _ram_hogs()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"แรมไม่พอ — {entry.id} ต้องการราว {want:.0f} GB แต่ว่างอยู่ {avail:.0f} GB "
+                    f"(กันไว้ให้ระบบ {_RAM_SAFETY_GB} GB)"
+                    + (f" · ตอนนี้ {busy} ถือแรมอยู่ หยุดตัวนั้นก่อนแล้วลองใหม่" if busy else "")
+                ),
+            )
+
     script = paths.repo("engines", f"{entry.engine}.sh")
     if not os.path.isfile(script):
         raise HTTPException(status_code=400, detail=f"ไม่พบสคริปต์ engine: {script}")
@@ -380,7 +420,11 @@ def activate(req: ActivateReq) -> dict[str, Any]:
         env["CTX"] = str(req.ctx)
     env["MODEL_ID"] = entry.id
 
-    args_list = [catalog.expand(entry), *shlex.split(entry.args or "")]
+    # ~ ใน args ต้องขยายเอง — ส่งเป็น argv ตรง ๆ ไม่ผ่าน shell จึงไม่มีใครขยายให้
+    # (เจอจริง: -md ~/models/.../mtp-xxx.gguf → llama-server หา draft model ไม่เจอ)
+    args_list = [catalog.expand(entry)] + [
+        os.path.expanduser(tok) for tok in shlex.split(entry.args or "")
+    ]
 
     try:
         proc = subprocess.run(

@@ -310,3 +310,50 @@ def test_list_software(client):
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["software"]) == len(__import__("server.software", fromlist=["SOFTWARE"]).SOFTWARE)
+
+
+# --- บั๊กที่เจอตอนทดสอบบนเครื่องจริง (2026-08-29) --------------------------
+
+
+def test_args_ต้องขยาย_tilde_ก่อนส่งให้_engine(monkeypatch, tmp_path):
+    """~ ใน args ไม่มีใครขยายให้ เพราะส่งเป็น argv ตรง ๆ ไม่ผ่าน shell
+
+    ของจริงที่เจอ: -md ~/models/.../mtp-xxx.gguf → llama-server หา draft model ไม่เจอ
+    """
+    import shlex
+    import os as _os
+
+    args = "-md ~/models/gguf/x/mtp.gguf --spec-type draft-mtp"
+    expanded = [_os.path.expanduser(t) for t in shlex.split(args)]
+
+    assert not expanded[1].startswith("~"), "path ต้องถูกขยายแล้ว"
+    assert expanded[1].startswith(_os.path.expanduser("~"))
+    assert expanded[2] == "--spec-type", "flag ที่ไม่ใช่ path ต้องไม่ถูกแตะ"
+
+
+def test_need_gb_คำนวณตาม_ctx_เมื่อรู้_kv_per_token(tmp_path):
+    from server import catalog as cat
+
+    entry = cat.ModelEntry(
+        id="x", name="x", engine="llamacpp",
+        path=str(tmp_path / "m.gguf"), kv_kb_per_token=64, ctx=262144, need_gb=55,
+    )
+    (tmp_path / "m.gguf").write_bytes(b"0" * 1000)
+
+    # KV = 262144 tokens x 64KB = 16.8GB + buffer 3GB → ต้องมากกว่า need_gb ที่วัดมือไว้ตอน ctx เต็ม
+    assert cat.need_gb(entry, 262144) > 19
+    # ctx น้อยลง = ใช้แรมน้อยลง (นี่คือเหตุผลที่ให้ผู้ใช้ลด ctx ได้)
+    assert cat.need_gb(entry, 32768) < cat.need_gb(entry, 262144)
+
+
+def test_activate_ปฏิเสธเมื่อแรมไม่พอ(client, monkeypatch):
+    from server import catalog as cat
+    from server import software as sw
+
+    monkeypatch.setattr(sw, "mem_available_gb", lambda: 20.0)
+    monkeypatch.setattr(cat, "is_ready", lambda e: True)
+    monkeypatch.setattr(cat, "need_gb", lambda e, c=None: 90.0)
+
+    r = client.post("/api/activate", json={"id": "glm-5.3-flash-udq1", "port": 8001})
+    assert r.status_code == 409
+    assert "แรมไม่พอ" in r.json()["detail"]
