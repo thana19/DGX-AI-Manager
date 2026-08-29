@@ -623,6 +623,148 @@ def test_stop_instance_แสดงแรมที่คืนได้(client, 
     assert "15 GB" in resp.json()["message"]
 
 
+# ---------------------------------------------------------------------------
+# /api/endpoints — โค้ดตัวอย่างให้หน้าเว็บเอาไปสร้าง snippet ต่อกับโมเดลที่โหลดอยู่
+# ---------------------------------------------------------------------------
+
+
+def test_list_endpoints_instance_และ_gateway_ปกติ(client, monkeypatch):
+    fake = [
+        instances.Instance(
+            port=8001, engine="llamacpp", pid=123,
+            model_file="Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf",
+            model_path="/home/dgx/models/gguf/x/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf",
+            ctx=262144, rss_gb=2.5, up=True,
+        ),
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: fake)
+
+    def handler(request):
+        if request.url.port == 4000:
+            return httpx.Response(200, json={"data": [
+                {"id": "qwen38"},
+                {"id": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P"},
+            ]})
+        if request.url.port == 8001:
+            return httpx.Response(200, json={"data": [
+                {"id": "/home/dgx/models/gguf/x/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"},
+            ]})
+        raise AssertionError(f"unexpected port {request.url.port}")
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/endpoints")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["gateway"]["port"] == 4000
+    assert body["gateway"]["up"] is True
+    assert body["gateway"]["models"] == [
+        {"id": "qwen38", "live": False},
+        {"id": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P", "live": True},
+    ]
+    assert body["gateway"]["recommended_model"] == "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P"
+
+    assert len(body["direct"]) == 1
+    d = body["direct"][0]
+    assert d["port"] == 8001
+    assert d["engine"] == "llamacpp"
+    assert d["model_file"] == "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+    assert d["served_model_id"] == "/home/dgx/models/gguf/x/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+    assert d["up"] is True
+
+
+def test_list_endpoints_gateway_2_โมเดล_instance_รันตัวเดียว_match_case_insensitive_ตัด_gguf(client, monkeypatch):
+    """เจอของจริงบนเครื่อง: gateway มีชื่อค้างที่ไม่มี instance รันจริงปนอยู่ — ต้องแยกได้ว่าตัวไหน "ยิงได้จริง" """
+    fake = [
+        instances.Instance(
+            port=8001, engine="llamacpp", pid=123, model_file="qwen38-Live.GGUF",
+            model_path="/home/dgx/models/gguf/x/qwen38-Live.GGUF",
+            ctx=131072, rss_gb=2.0, up=True,
+        ),
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: fake)
+
+    def handler(request):
+        if request.url.port == 4000:
+            return httpx.Response(200, json={"data": [
+                {"id": "QWEN38-LIVE"},  # ตัวพิมพ์ต่างจาก model_file แต่ต้อง match ได้
+                {"id": "qwen38-ค้าง-ไม่มี-instance"},
+            ]})
+        if request.url.port == 8001:
+            return httpx.Response(200, json={"data": [{"id": "/home/dgx/models/gguf/x/qwen38-Live.GGUF"}]})
+        raise AssertionError(f"unexpected port {request.url.port}")
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/endpoints")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["gateway"]["models"] == [
+        {"id": "QWEN38-LIVE", "live": True},
+        {"id": "qwen38-ค้าง-ไม่มี-instance", "live": False},
+    ]
+    assert body["gateway"]["recommended_model"] == "QWEN38-LIVE"
+
+
+def test_list_endpoints_ไม่มี_instance_เลย(client, monkeypatch):
+    monkeypatch.setattr(instances, "scan", lambda **kw: [])
+
+    def handler(request):
+        return httpx.Response(200, json={"data": [{"id": "qwen38"}]})
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/endpoints")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["direct"] == []
+    assert body["gateway"]["up"] is True
+    assert body["gateway"]["models"] == [{"id": "qwen38", "live": False}]
+    assert body["gateway"]["recommended_model"] is None
+
+
+def test_list_endpoints_gateway_ต่อไม่ได้_ไม่_raise(client, monkeypatch):
+    monkeypatch.setattr(instances, "scan", lambda **kw: [])
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/endpoints")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["gateway"]["up"] is False
+    assert body["gateway"]["models"] == []
+    assert body["gateway"]["recommended_model"] is None
+
+
+def test_list_endpoints_instance_v1_models_ตอบไม่ได้_served_model_id_เป็น_null(client, monkeypatch):
+    fake = [
+        instances.Instance(
+            port=8002, engine="llamacpp", pid=456, model_file="m.gguf",
+            model_path="/home/dgx/models/m.gguf", ctx=131072, rss_gb=1.0, up=True,
+        ),
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: fake)
+
+    def handler(request):
+        if request.url.port == 4000:
+            return httpx.Response(200, json={"data": []})
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/endpoints")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["direct"]) == 1
+    assert body["direct"][0]["port"] == 8002
+    assert body["direct"][0]["served_model_id"] is None
+
+
 # --- draft model โหลดไม่ขึ้น → ลองใหม่โดยถอด draft ออก (เจอจริง 2026-08-29) -----
 
 
@@ -713,3 +855,14 @@ def test_metrics_ส่ง_field_เสริมของ_gauge_ต่อไป�
 
     assert body["ok"] is True
     assert body["gauges"][0]["sub"] == "เหลือ 2.7 TB"
+
+
+def test_endpoints_พอร์ต_gateway_ตามที่ตั้งใน_env(monkeypatch):
+    """snippet ที่ผู้ใช้ copy ต้องชี้พอร์ตจริง — hardcode 4000 ไว้จะผิดทันทีถ้ามีคน override"""
+    from server import main as m
+
+    monkeypatch.setattr(m, "_LITELLM_URL", "http://127.0.0.1:4444")
+    assert m._litellm_port() == 4444
+
+    monkeypatch.setattr(m, "_LITELLM_URL", "http://127.0.0.1")
+    assert m._litellm_port() == 4000

@@ -227,6 +227,54 @@
     .topbar-row{flex-direction:column; align-items:flex-start;}
     table, .table-scroll{font-size:0.8rem;}
   }
+
+  /* ===== modal (🔌 วิธีใช้) ===== */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(0,0,0,0.55);
+    display:none; align-items:center; justify-content:center; z-index:200; padding:20px;
+  }
+  .modal-backdrop.open{display:flex;}
+  .modal-box{
+    background:var(--card); border:1px solid var(--border); border-radius:12px;
+    max-width:640px; width:100%; max-height:85vh; overflow-y:auto; padding:20px 22px;
+  }
+  .modal-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;}
+  .modal-head h3{margin:0; font-size:1rem; color:var(--text);}
+  .modal-close{background:none; border:none; color:var(--sub); font-size:1.3rem; cursor:pointer; padding:0 4px; line-height:1;}
+  .modal-close:hover{color:var(--text);}
+  .modal-tabs{display:flex; flex-wrap:wrap; gap:4px; border-bottom:1px solid var(--line); margin:14px 0 12px;}
+  .modal-tab-btn{
+    background:none; border:none; border-bottom:2px solid transparent; border-radius:0;
+    color:var(--sub); padding:6px 10px; font-size:0.85rem;
+  }
+  .modal-tab-btn.active{color:var(--accent); border-bottom-color:var(--accent);}
+  .modal-tab-panel{display:none;}
+  .modal-tab-panel.active{display:block;}
+  .code-block-wrap{position:relative;}
+  .code-block{
+    background:var(--bg); border:1px solid var(--border); border-radius:8px;
+    padding:12px 40px 12px 14px; font-size:0.8rem; overflow-x:auto;
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre; margin:0;
+  }
+  .code-copy-btn{position:absolute; top:8px; right:8px;}
+
+  /* ===== playground (💬 ลองคุย) ===== */
+  #pg-messages{
+    display:flex; flex-direction:column; gap:10px; max-height:420px; overflow-y:auto;
+    margin-bottom:12px; padding-right:2px;
+  }
+  .pg-msg{border:1px solid var(--border); border-radius:8px; padding:8px 12px; background:var(--bg);}
+  .pg-msg-user{border-color:var(--accent);}
+  .pg-msg-role{font-size:0.72rem; color:var(--sub); text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;}
+  .pg-msg-text{white-space:pre-wrap; word-break:break-word; font-size:0.9rem;}
+  .pg-msg-img{max-height:140px; border-radius:6px; margin-top:6px; display:block;}
+  .pg-reasoning{margin-bottom:6px; font-size:0.82rem; color:var(--sub);}
+  .pg-reasoning summary{cursor:pointer; color:var(--accent);}
+  .pg-reasoning-text{white-space:pre-wrap; word-break:break-word; margin-top:6px; color:var(--sub);}
+  #pg-attach-preview{display:flex; align-items:center; gap:8px; margin-bottom:10px;}
+  #pg-attach-preview img{max-height:60px; border-radius:6px; border:1px solid var(--border);}
+  .pg-controls{display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;}
+  .pg-controls .field{margin-bottom:0;}
 </style>
 </head>
 <body>
@@ -254,6 +302,35 @@
     <p class="section-hint">instance ที่กำลังรันอยู่จริงตอนนี้บนเครื่อง (llama-server / vLLM / ds4)</p>
     <div id="instances-list"></div>
     <div id="instances-status" class="empty-state" style="display:none;"></div>
+  </section>
+
+  <section id="playground-section">
+    <h2>💬 ลองคุย</h2>
+    <p class="section-hint">พิมพ์คุยกับโมเดลที่โหลดอยู่ตอนนี้ได้เลย</p>
+    <div class="card">
+      <div class="field">
+        <label for="pg-endpoint">ปลายทาง</label>
+        <select id="pg-endpoint"></select>
+      </div>
+      <div id="pg-empty" class="empty-state" style="display:none;">— ยังไม่มีโมเดลโหลดอยู่ โหลดโมเดลก่อนแล้วค่อยกลับมา —</div>
+      <div id="pg-body">
+        <div id="pg-messages"></div>
+        <div id="pg-attach-preview" style="display:none;"></div>
+        <div class="field">
+          <label for="pg-input">ข้อความ</label>
+          <textarea id="pg-input" rows="3" placeholder="พิมพ์ข้อความ… (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)"></textarea>
+        </div>
+        <div class="pg-controls">
+          <div class="field" style="width:110px;"><label for="pg-max-tokens">max_tokens</label><input type="number" id="pg-max-tokens" value="512"></div>
+          <div class="field" style="width:100px;"><label for="pg-temperature">temperature</label><input type="number" id="pg-temperature" value="0.7" step="0.1"></div>
+          <input type="file" id="pg-image-input" accept="image/*" style="display:none;">
+          <button type="button" class="small" id="pg-attach-btn">📎 แนบรูป</button>
+          <button type="button" class="small" id="pg-clear-btn">🗑 ล้าง</button>
+          <button type="button" class="primary" id="pg-send-btn" style="margin-left:auto;">▶ ส่ง</button>
+        </div>
+        <div id="pg-stats" class="section-hint" style="margin:8px 0 0;"></div>
+      </div>
+    </div>
   </section>
 
   <section>
@@ -328,6 +405,16 @@
     <div id="downloads-status" class="empty-state" style="display:none;"></div>
   </section>
 
+</div>
+
+<div class="modal-backdrop" id="info-modal-backdrop">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>🔌 วิธีใช้</h3>
+      <button type="button" class="modal-close" id="info-modal-close" aria-label="ปิด">✕</button>
+    </div>
+    <div id="info-modal-body"></div>
+  </div>
 </div>
 
 <script>
@@ -613,6 +700,7 @@
         '<span class="badge badge-muted">' + escapeHtml(inst.engine) + '</span>' +
         '<div class="instance-meta">' + metaParts.map(function(s){return "<span>"+s+"</span>";}).join("") + '</div>' +
         '<div class="instance-actions">' +
+          '<button class="small btn-instance-info" data-port="' + escapeHtml(inst.port) + '" title="วิธีใช้">🔌</button>' +
           '<button class="' + stopClass + ' btn-instance-stop" data-port="' + escapeHtml(inst.port) + '"' +
             (isMain ? ' data-main="1"' : '') + '>⏹ หยุด</button>' +
         '</div>' +
@@ -634,6 +722,11 @@
     box.querySelectorAll(".btn-instance-stop").forEach(function(btn){
       btn.addEventListener("click", function(){
         stopInstance(parseInt(btn.dataset.port, 10), btn.dataset.main === "1", btn);
+      });
+    });
+    box.querySelectorAll(".btn-instance-info").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        openInfoModal(parseInt(btn.dataset.port, 10));
       });
     });
   }
@@ -666,12 +759,157 @@
       showMsg(res.message || (res.ok ? "หยุดแล้ว" : "หยุดไม่สำเร็จ"), res.ok ? "ok" : "error");
       await loadInstances();
       await loadModels();
+      await loadEndpoints();
     }catch(e){
       showMsg(e.message, "error");
     }finally{
       btn.disabled = false;
     }
   }
+
+  /* ===================== 🔌 วิธีใช้ (info modal) ===================== */
+
+  function copyText(t){
+    if(navigator.clipboard && window.isSecureContext){
+      navigator.clipboard.writeText(t);
+    }else{
+      var ta = document.createElement("textarea");
+      ta.value = t;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    showMsg("คัดลอกแล้ว", "ok");
+  }
+
+  function closeInfoModal(){
+    document.getElementById("info-modal-backdrop").classList.remove("open");
+  }
+
+  async function openInfoModal(port){
+    var backdrop = document.getElementById("info-modal-backdrop");
+    var body = document.getElementById("info-modal-body");
+    backdrop.classList.add("open");
+    body.innerHTML = '<p class="section-hint">กำลังโหลด…</p>';
+    try{
+      var data = await apiFetch("/api/endpoints");
+      renderInfoModal(data, port);
+    }catch(e){
+      body.innerHTML = '<p style="color:var(--red);">โหลดข้อมูลปลายทางไม่ได้: ' + escapeHtml(e.message) + '</p>';
+    }
+  }
+
+  function renderInfoModal(data, port){
+    var host = location.hostname;
+    var gw = (data && data.gateway) || {port: 4000, up: false, models: []};
+    var direct = ((data && data.direct) || []).find(function(d){ return d.port === port; });
+    var servedModel = (direct && direct.served_model_id) || "auto";
+    var useGateway = !!gw.up;
+    var gwPort = gw.port || 4000;
+    var baseUrl = useGateway ? ("http://" + host + ":" + gwPort) : ("http://" + host + ":" + port);
+    // ต้องใช้ recommended_model — models[] เป็น object {id, live} และบางตัว live:false
+    // (ของจริง: gateway คืน "qwen38" ที่ route ไปพอร์ตว่าง ยิงแล้ว Connection error)
+    var model = useGateway ? (gw.recommended_model || servedModel) : servedModel;
+
+    var noteHtml = "";
+    if(!useGateway){
+      noteHtml = '<p style="color:var(--orange); font-size:0.85rem; margin:6px 0 0;">⚠️ gateway (:4000) ไม่ทำงาน — ตัวอย่างด้านล่างต่อตรงที่พอร์ต :' + port + ' แทน</p>';
+    }
+
+    var subtitle =
+      '<p class="section-hint" style="margin:0 0 2px;">ต่อผ่าน gateway <b>:4000</b> = URL คงที่ สลับ backend ได้โดยไม่ต้องแก้โค้ด</p>' +
+      '<p class="section-hint" style="margin:0;">ต่อตรง <b>:' + escapeHtml(port) + '</b> = latency ต่ำสุด</p>' +
+      noteHtml;
+
+    var curlBlock =
+      "export OPENAI_BASE_URL=" + baseUrl + "/v1\n" +
+      "export OPENAI_API_KEY=sk-local\n\n" +
+      "curl -s $OPENAI_BASE_URL/chat/completions \\\n" +
+      "  -H 'Content-Type: application/json' \\\n" +
+      "  -d '{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":\"สวัสดี\"}]}'";
+
+    var claudeBlock =
+      "export ANTHROPIC_BASE_URL=" + baseUrl + "\n" +
+      "export ANTHROPIC_API_KEY=sk-local\n\n" +
+      "# LiteLLM รองรับ Anthropic message format โดยตรง ต่อ Claude Code ผ่านนี้ได้เลย";
+
+    var opencodeObj = {
+      provider: {
+        dgx: {
+          npm: "@ai-sdk/openai-compatible",
+          options: {baseURL: baseUrl + "/v1", apiKey: "sk-local"},
+          models: (function(){ var o = {}; o[model] = {}; return o; })()
+        }
+      }
+    };
+    var opencodeBlock = "// ~/.config/opencode/opencode.jsonc\n" + JSON.stringify(opencodeObj, null, 2);
+
+    var pyJsBlock =
+      "# Python\n" +
+      "from openai import OpenAI\n\n" +
+      "client = OpenAI(base_url=\"" + baseUrl + "/v1\", api_key=\"sk-local\")\n" +
+      "resp = client.chat.completions.create(\n" +
+      "    model=\"" + model + "\",\n" +
+      "    messages=[{\"role\": \"user\", \"content\": \"สวัสดี\"}]\n" +
+      ")\n" +
+      "print(resp.choices[0].message.content)\n\n" +
+      "// JavaScript\n" +
+      "import OpenAI from 'openai';\n\n" +
+      "const client = new OpenAI({ baseURL: '" + baseUrl + "/v1', apiKey: 'sk-local' });\n" +
+      "const resp = await client.chat.completions.create({\n" +
+      "  model: '" + model + "',\n" +
+      "  messages: [{ role: 'user', content: 'สวัสดี' }]\n" +
+      "});\n" +
+      "console.log(resp.choices[0].message.content);";
+
+    var tabs = [
+      {key: "curl", label: "curl / env", code: curlBlock},
+      {key: "claude", label: "Claude Code", code: claudeBlock},
+      {key: "opencode", label: "opencode", code: opencodeBlock},
+      {key: "pyjs", label: "Python / JS", code: pyJsBlock}
+    ];
+
+    var body = document.getElementById("info-modal-body");
+    body.innerHTML =
+      subtitle +
+      '<div class="modal-tabs">' + tabs.map(function(t, i){
+        return '<button type="button" class="modal-tab-btn' + (i === 0 ? " active" : "") + '" data-tab="' + t.key + '">' + escapeHtml(t.label) + '</button>';
+      }).join("") + '</div>' +
+      tabs.map(function(t, i){
+        return '<div class="modal-tab-panel' + (i === 0 ? " active" : "") + '" data-tab-panel="' + t.key + '">' +
+          '<div class="code-block-wrap">' +
+            '<button type="button" class="small code-copy-btn">📋</button>' +
+            '<pre class="code-block">' + escapeHtml(t.code) + '</pre>' +
+          '</div>' +
+        '</div>';
+      }).join("");
+
+    body.querySelectorAll(".modal-tab-btn").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        body.querySelectorAll(".modal-tab-btn").forEach(function(b){ b.classList.remove("active"); });
+        body.querySelectorAll(".modal-tab-panel").forEach(function(p){ p.classList.remove("active"); });
+        btn.classList.add("active");
+        body.querySelector('.modal-tab-panel[data-tab-panel="' + btn.dataset.tab + '"]').classList.add("active");
+      });
+    });
+
+    body.querySelectorAll(".code-copy-btn").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var pre = btn.parentElement.querySelector(".code-block");
+        copyText(pre.textContent);
+      });
+    });
+  }
+
+  document.getElementById("info-modal-close").addEventListener("click", closeInfoModal);
+  document.getElementById("info-modal-backdrop").addEventListener("click", function(e){
+    if(e.target.id === "info-modal-backdrop") closeInfoModal();
+  });
+  document.addEventListener("keydown", function(e){
+    if(e.key === "Escape") closeInfoModal();
+  });
 
   /* ===================== CATALOG ===================== */
 
@@ -871,6 +1109,7 @@
       if(sum.slots) bits.push(sum.slots + " slot");
       if(sum.multimodal) bits.push("อ่านภาพได้");
       showMsg(bits.join(" · "), "ok");
+      await loadEndpoints();
       if(logEl){
         // log ดิบมี warning ที่ไม่สำคัญเป็นสิบบรรทัด (unused tensor) — ซ่อนไว้ ไม่งั้นดูเหมือนพัง
         var html = "";
@@ -1266,12 +1505,331 @@
     }
   }
 
+  /* ===================== PLAYGROUND (💬 ลองคุย) ===================== */
+
+  var pg = {
+    endpoints: [],
+    messages: [],
+    attachedImage: null,
+    controller: null,
+    streaming: false
+  };
+
+  async function loadEndpoints(){
+    try{
+      var data = await apiFetch("/api/endpoints");
+      renderPlaygroundEndpoints(data);
+    }catch(e){
+      renderPlaygroundEndpoints(null);
+    }
+  }
+
+  function renderPlaygroundEndpoints(data){
+    var sel = document.getElementById("pg-endpoint");
+    var emptyEl = document.getElementById("pg-empty");
+    var bodyEl = document.getElementById("pg-body");
+    var host = location.hostname;
+    var opts = [];
+
+    if(data){
+      if(data.gateway && data.gateway.up){
+        var gwModel = data.gateway.recommended_model;
+        // ไม่มีโมเดลที่ใช้ได้จริงบน gateway → อย่าใส่ลง dropdown เลย ยิงไปก็ error
+        if(gwModel){
+          var gwPort2 = data.gateway.port || 4000;
+          opts.push({
+            value: "gateway",
+            label: "🌐 gateway :" + gwPort2 + " (" + gwModel + ")",
+            baseUrl: "http://" + host + ":" + gwPort2,
+            model: gwModel
+          });
+        }
+      }
+      (data.direct || []).forEach(function(d){
+        if(!d.up) return;
+        var m = d.served_model_id || "auto";
+        opts.push({
+          value: "direct-" + d.port,
+          label: "🔌 :" + d.port + " (" + m + (d.engine ? " · " + d.engine : "") + ")",
+          baseUrl: "http://" + host + ":" + d.port,
+          model: m
+        });
+      });
+    }
+
+    pg.endpoints = opts;
+
+    if(opts.length === 0){
+      sel.innerHTML = "";
+      emptyEl.style.display = "block";
+      bodyEl.style.display = "none";
+      return;
+    }
+
+    emptyEl.style.display = "none";
+    bodyEl.style.display = "";
+    var prevValue = sel.value;
+    sel.innerHTML = opts.map(function(o){
+      return '<option value="' + escapeHtml(o.value) + '">' + escapeHtml(o.label) + '</option>';
+    }).join("");
+    if(opts.some(function(o){ return o.value === prevValue; })) sel.value = prevValue;
+  }
+
+  function currentEndpoint(){
+    var sel = document.getElementById("pg-endpoint");
+    return pg.endpoints.find(function(o){ return o.value === sel.value; });
+  }
+
+  function pgSetSending(isSending){
+    pg.streaming = isSending;
+    var btn = document.getElementById("pg-send-btn");
+    if(isSending){
+      btn.textContent = "⏹ หยุด";
+      btn.classList.remove("primary");
+      btn.classList.add("danger");
+    }else{
+      btn.textContent = "▶ ส่ง";
+      btn.classList.add("primary");
+      btn.classList.remove("danger");
+    }
+  }
+
+  function renderAttachPreview(){
+    var box = document.getElementById("pg-attach-preview");
+    box.innerHTML = "";
+    if(!pg.attachedImage){
+      box.style.display = "none";
+      return;
+    }
+    box.style.display = "flex";
+    var img = document.createElement("img");
+    img.src = pg.attachedImage;
+    box.appendChild(img);
+    var removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "small";
+    removeBtn.textContent = "✕ เอาออก";
+    removeBtn.addEventListener("click", function(){
+      pg.attachedImage = null;
+      renderAttachPreview();
+    });
+    box.appendChild(removeBtn);
+  }
+
+  function appendMessageBubble(msg){
+    var box = document.getElementById("pg-messages");
+    var div = document.createElement("div");
+    div.className = "pg-msg pg-msg-" + msg.role;
+    var textPart = Array.isArray(msg.content)
+      ? msg.content.filter(function(p){ return p.type === "text"; }).map(function(p){ return p.text; }).join(" ")
+      : msg.content;
+    var roleLabel = msg.role === "user" ? "คุณ" : "ผู้ช่วย";
+    div.innerHTML =
+      '<div class="pg-msg-role">' + escapeHtml(roleLabel) + '</div>' +
+      '<div class="pg-msg-text">' + escapeHtml(textPart || "") + '</div>';
+    if(Array.isArray(msg.content)){
+      msg.content.filter(function(p){ return p.type === "image_url"; }).forEach(function(p){
+        var img = document.createElement("img");
+        img.className = "pg-msg-img";
+        img.src = p.image_url.url; // data URI ที่สร้างเองจากไฟล์ที่แนบ ไม่ใช่ input จากภายนอก
+        div.appendChild(img);
+      });
+    }
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    return div;
+  }
+
+  function appendAssistantBubble(){
+    var box = document.getElementById("pg-messages");
+    var div = document.createElement("div");
+    div.className = "pg-msg pg-msg-assistant";
+    div.innerHTML =
+      '<div class="pg-msg-role">ผู้ช่วย</div>' +
+      '<details class="pg-reasoning" style="display:none;"><summary>💭 กำลังคิด</summary><div class="pg-reasoning-text"></div></details>' +
+      '<div class="pg-msg-text"></div>';
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    return div;
+  }
+
+  function updateAssistantBubble(bubble, assistantMsg){
+    var reasoningBox = bubble.querySelector(".pg-reasoning");
+    var reasoningText = bubble.querySelector(".pg-reasoning-text");
+    var textBox = bubble.querySelector(".pg-msg-text");
+    if(assistantMsg.reasoning){
+      reasoningBox.style.display = "block";
+      reasoningText.innerHTML = escapeHtml(assistantMsg.reasoning);
+    }
+    if(assistantMsg.error){
+      textBox.innerHTML = '<span style="color:var(--red);">' + escapeHtml(assistantMsg.error) + '</span>';
+    }else{
+      textBox.innerHTML = escapeHtml(assistantMsg.content);
+    }
+    var box = document.getElementById("pg-messages");
+    box.scrollTop = box.scrollHeight;
+  }
+
+  async function pgSend(){
+    if(pg.streaming){
+      if(pg.controller) pg.controller.abort();
+      return;
+    }
+
+    var input = document.getElementById("pg-input");
+    var text = input.value.trim();
+    if(!text && !pg.attachedImage) return;
+
+    var ep = currentEndpoint();
+    if(!ep){
+      showMsg("ยังไม่มีปลายทางให้เชื่อมต่อ", "error");
+      return;
+    }
+
+    var userContent;
+    if(pg.attachedImage){
+      userContent = [];
+      if(text) userContent.push({type: "text", text: text});
+      userContent.push({type: "image_url", image_url: {url: pg.attachedImage}});
+    }else{
+      userContent = text;
+    }
+    var userMsg = {role: "user", content: userContent};
+    pg.messages.push(userMsg);
+    appendMessageBubble(userMsg);
+    input.value = "";
+    pg.attachedImage = null;
+    renderAttachPreview();
+
+    var maxTokens = parseInt(document.getElementById("pg-max-tokens").value, 10);
+    if(!maxTokens || maxTokens <= 0) maxTokens = 512;
+    var temperature = parseFloat(document.getElementById("pg-temperature").value);
+    if(isNaN(temperature)) temperature = 0.7;
+
+    var assistantMsg = {content: "", reasoning: "", error: null};
+    var bubble = appendAssistantBubble();
+
+    pg.controller = new AbortController();
+    pgSetSending(true);
+
+    var startTime = performance.now();
+    var tokenCount = 0;
+    var gotAnyContent = false, gotAnyReasoning = false, aborted = false, hardError = null;
+
+    try{
+      var res = await fetch(ep.baseUrl + "/v1/chat/completions", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          model: ep.model,
+          messages: pg.messages.map(function(m){ return {role: m.role, content: m.content}; }),
+          max_tokens: maxTokens,
+          temperature: temperature,
+          stream: true
+        }),
+        signal: pg.controller.signal
+      });
+      if(!res.ok || !res.body){
+        throw new Error("เชื่อมต่อ " + ep.baseUrl + " ไม่ได้ (HTTP " + res.status + ") — โมเดลอาจถูกหยุดไปแล้ว");
+      }
+
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = "";
+      while(true){
+        var chunk = await reader.read();
+        if(chunk.done) break;
+        buf += decoder.decode(chunk.value, {stream: true});
+        var lines = buf.split("\n");
+        buf = lines.pop();
+        for(var i = 0; i < lines.length; i++){
+          var line = lines[i].trim();
+          if(line.indexOf("data:") !== 0) continue;
+          var payload = line.slice(5).trim();
+          if(payload === "[DONE]") continue;
+          var evt;
+          try{ evt = JSON.parse(payload); }catch(e3){ continue; }
+          var delta = (evt.choices && evt.choices[0] && evt.choices[0].delta) || {};
+          var changed = false;
+          if(delta.reasoning_content){
+            assistantMsg.reasoning += delta.reasoning_content;
+            gotAnyReasoning = true; tokenCount++; changed = true;
+          }
+          if(delta.content){
+            assistantMsg.content += delta.content;
+            gotAnyContent = true; tokenCount++; changed = true;
+          }
+          if(changed) updateAssistantBubble(bubble, assistantMsg);
+        }
+      }
+    }catch(e){
+      if(e.name === "AbortError"){
+        aborted = true;
+      }else{
+        hardError = e.message || "เชื่อมต่อโมเดลไม่ได้ — โมเดลอาจถูกหยุดไปแล้ว";
+      }
+    }
+
+    pg.controller = null;
+    pgSetSending(false);
+    var elapsed = (performance.now() - startTime) / 1000;
+
+    if(hardError && !gotAnyContent && !gotAnyReasoning){
+      bubble.remove();
+      showMsg(hardError, "error");
+      return;
+    }
+
+    if(hardError){
+      showMsg(hardError + " (ข้อความที่ได้มาก่อนหน้ายังอยู่)", "error");
+    }
+    if(!hardError && !aborted && gotAnyReasoning && !gotAnyContent){
+      showMsg("คิดจนหมด token — ลองเพิ่ม max_tokens", "error");
+    }
+
+    pg.messages.push({role: "assistant", content: assistantMsg.content});
+    var statsEl = document.getElementById("pg-stats");
+    var tps = elapsed > 0 ? (tokenCount / elapsed).toFixed(1) : "0.0";
+    statsEl.textContent = tokenCount + " token · " + elapsed.toFixed(1) + " วิ · " + tps + " tok/s";
+  }
+
+  document.getElementById("pg-send-btn").addEventListener("click", pgSend);
+  document.getElementById("pg-input").addEventListener("keydown", function(e){
+    if(e.key === "Enter" && !e.shiftKey){
+      e.preventDefault();
+      pgSend();
+    }
+  });
+  document.getElementById("pg-clear-btn").addEventListener("click", function(){
+    if(pg.streaming && pg.controller) pg.controller.abort();
+    pg.messages = [];
+    pg.attachedImage = null;
+    renderAttachPreview();
+    document.getElementById("pg-messages").innerHTML = "";
+    document.getElementById("pg-stats").textContent = "";
+  });
+  document.getElementById("pg-attach-btn").addEventListener("click", function(){
+    document.getElementById("pg-image-input").click();
+  });
+  document.getElementById("pg-image-input").addEventListener("change", function(e){
+    var file = e.target.files[0];
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      pg.attachedImage = reader.result;
+      renderAttachPreview();
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  });
+
   /* ===================== INIT ===================== */
 
   async function init(){
     await Promise.all([loadHealth(), loadEngines()]);
     await loadModels();
     await loadInstances();
+    await loadEndpoints();
     setInterval(loadInstances, 10000);
     await loadMetrics();
     setInterval(loadMetrics, 10000);

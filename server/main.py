@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 import shlex
 import subprocess
 from typing import Any
@@ -26,6 +27,9 @@ DEFAULT_PORT = int(os.environ.get("AISERVER2_PORT", "9001"))
 # DGX Spark Monitor — แดชบอร์ด/agent แยกต่างหากที่รันบนพอร์ตนี้ ไม่เปิด CORS
 # ⇒ หน้าเว็บ v2 เรียกตรงไม่ได้ ต้อง proxy ผ่าน /api/metrics (ดู task ส่วนที่ 1)
 _DGX_MONITOR_URL = os.environ.get("DGX_MONITOR_URL", "http://127.0.0.1:9100")
+
+# LiteLLM gateway — ประตู API ถาวรของ client ภายนอก (ดู CONTEXT.md ตารางพอร์ต)
+_LITELLM_URL = os.environ.get("LITELLM_URL", "http://127.0.0.1:4000")
 
 # LLM หลักเสิร์ฟบน :8000 เสมอ — กติกาเหล็กจาก CONTEXT.md (thClaws และ client ในเครื่องผูกพอร์ตนี้)
 _MAIN_LLM_PORT = 8000
@@ -452,6 +456,93 @@ def stop_instance(port: int, req: InstanceStopReq | None = None) -> dict[str, An
                 message = f"{message} (คืนแรมไปได้ราว {freed:.0f} GB)"
 
     return {"ok": ok, "message": message}
+
+
+# ---------------------------------------------------------------------------
+# /api/endpoints — โค้ดตัวอย่างให้หน้าเว็บเอาไปสร้าง snippet ต่อกับโมเดลที่โหลดอยู่
+# ---------------------------------------------------------------------------
+
+_ENDPOINTS_TIMEOUT_SEC = 3.0  # หน้าเว็บเรียก endpoint นี้บ่อย — ต่อไม่ได้/ช้าต้องไม่ทำให้ค้าง
+
+
+def _fetch_v1_models(base_url: str, client: httpx.Client) -> list[str] | None:
+    """ยิง GET <base_url>/v1/models คืนลิสต์ id ของโมเดลที่เสิร์ฟอยู่ — None ถ้าต่อไม่ได้/ตอบเพี้ยน
+
+    reuse ได้ทั้งเช็ค gateway (:4000) และ instance ตรง (:800x) — ห้าม raise ไม่ว่ากรณีไหน
+    เพราะ endpoint นี้ต้องตอบ 200 เสมอ (หน้าเว็บพึ่งพา)
+    """
+    try:
+        resp = client.get(f"{base_url}/v1/models", timeout=_ENDPOINTS_TIMEOUT_SEC)
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    items = data.get("data")
+    if not isinstance(items, list):
+        return None
+
+    return [it["id"] for it in items if isinstance(it, dict) and isinstance(it.get("id"), str)]
+
+
+def _normalize_model_name(name: str) -> str:
+    """ตัดนามสกุล .gguf ออกแล้ว lowercase — ไว้เทียบชื่อโมเดลของ gateway กับ model_file ของ instance จริง
+
+    เจอของจริงบนเครื่อง: LiteLLM มีโมเดลชื่อค้างที่ไม่มี instance รันจริงปนอยู่ในลิสต์ (route ไป :8000
+    ที่ไม่มีอะไรรัน) ⇒ หน้าเว็บหยิบตัวแรกไปสร้าง snippet ไม่ได้อีกต่อไป ต้องบอกด้วยว่าตัวไหน "ยิงได้จริง"
+    """
+    base = name[:-5] if name.lower().endswith(".gguf") else name
+    return base.lower()
+
+
+def _litellm_port() -> int:
+    """พอร์ตของ LiteLLM จาก _LITELLM_URL — parse ไม่ได้ก็ใช้ 4000 ตามค่ามาตรฐาน"""
+    try:
+        return urllib.parse.urlsplit(_LITELLM_URL).port or 4000
+    except ValueError:
+        return 4000
+
+
+@app.get("/api/endpoints")
+def list_endpoints() -> dict[str, Any]:
+    scanned = instances.scan()
+    live_names = {_normalize_model_name(i.model_file) for i in scanned if i.model_file}
+
+    with httpx.Client() as client:
+        gateway_ids = _fetch_v1_models(_LITELLM_URL, client)
+
+        models_out = []
+        recommended_model: str | None = None
+        for mid in gateway_ids or []:
+            live = _normalize_model_name(mid) in live_names
+            if live and recommended_model is None:
+                recommended_model = mid
+            models_out.append({"id": mid, "live": live})
+
+        gateway = {
+            # ดึงพอร์ตจาก URL จริง — ถ้ามีคน override LITELLM_URL แล้ว hardcode 4000 ไว้
+            # ตัวอย่างโค้ดที่ผู้ใช้ copy ไปจะชี้ผิดพอร์ตทันที (ฟีเจอร์นี้มีไว้ให้ copy ไปใช้ได้เลย)
+            "port": _litellm_port(),
+            "up": gateway_ids is not None,
+            "models": models_out,
+            "recommended_model": recommended_model,
+        }
+
+        direct = []
+        for inst in scanned:
+            ids = _fetch_v1_models(f"http://127.0.0.1:{inst.port}", client)
+            direct.append({
+                "port": inst.port,
+                "engine": inst.engine,
+                "model_file": inst.model_file,
+                # llama-server คืน path เต็มของไฟล์เป็น id — ผู้ใช้ต้องใช้ค่านี้เวลายิงจริง (หรือ "auto")
+                "served_model_id": ids[0] if ids else None,
+                "up": inst.up,
+            })
+
+    return {"gateway": gateway, "direct": direct}
 
 
 # ---------------------------------------------------------------------------
