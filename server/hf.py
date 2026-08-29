@@ -23,6 +23,14 @@ RESOLVE_BASE = "https://huggingface.co"
 # ไม่กันไว้ = ผู้ใช้เห็น "Q8_0 0.8GB" แล้วเลือกไปโหลด ได้ draft head แทนโมเดลจริง 63GB
 _COMPANION_PREFIXES = ("mmproj-", "mtp-", "dflash-", "eagle3-", "eagle-", "draft-")
 
+# บั๊กจริง (HauhauCS/Qwen3.8-27B-...-MTP-GGUF): ไฟล์ draft ชื่อ "...-FastMTP-32K.gguf" ไม่ได้ขึ้นต้น
+# ด้วย prefix ไหนใน _COMPANION_PREFIXES เลย ⇒ ตกไปเงียบ ๆ ไม่ถูกจับเป็น quant ก็ไม่ถูกจับเป็น companion
+# (หายไปจากรายการทั้งที่เป็นของดี ใส่แล้วได้ speculative decoding เร็วขึ้นชัดเจน)
+# ⇒ ขยายให้จับคำเหล่านี้ "ที่ไหนก็ได้ในชื่อไฟล์" (case-insensitive) แทนการเช็คแค่ prefix
+# "fastmtp" ไม่ต้องแยกเขียน เพราะมีคำว่า "mtp" เป็น substring อยู่แล้ว
+_DRAFT_KEYWORDS = ("mtp", "dflash", "eagle", "draft")
+_VISION_KEYWORDS = ("mmproj",)
+
 # shard suffix แบบ "...-00001-of-00003.gguf" — ใช้ตัดท้ายก่อนหาชื่อ quant และหา shard_count
 _SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d+)-of-(?P<total>\d+)$")
 
@@ -67,6 +75,16 @@ class QuantGroup:
     shard_count: int  # 1 = ไฟล์เดียว
     companions: list[HfFile] = field(default_factory=list)  # mmproj-/mtp-/dflash- ของ repo นี้
 
+    @property
+    def draft_files(self) -> list[HfFile]:
+        """companion ชนิด draft (mtp/fastmtp/dflash/eagle/draft) ของ quant กลุ่มนี้"""
+        return [f for f in self.companions if companion_kind(f.path) == "draft"]
+
+    @property
+    def vision_files(self) -> list[HfFile]:
+        """companion ชนิด vision (mmproj) ของ quant กลุ่มนี้"""
+        return [f for f in self.companions if companion_kind(f.path) == "vision"]
+
 
 def fetch_repo(repo_id: str, *, token: str | None = None, client: httpx.Client | None = None) -> dict:
     """ยิง HF API ขอ metadata ของ repo พร้อม blobs (size/sha256 ทุกไฟล์)
@@ -99,8 +117,22 @@ def list_files(repo_json: dict) -> list[HfFile]:
     return files
 
 
+def companion_kind(path: str) -> str | None:
+    """ชนิดของไฟล์คู่: "draft" (mtp/fastmtp/dflash/eagle/draft) · "vision" (mmproj) · None ถ้าไม่ใช่ companion
+
+    ⚠️ เช็คจาก basename ของไฟล์เท่านั้น (ตัด path เต็มทิ้งก่อน) — กันกับดักที่ชื่อ repo/โฟลเดอร์
+    มีคำว่า MTP อยู่ในนั้นเอง (เช่น โฟลเดอร์ "...-MTP-GGUF") แต่ไฟล์ quant ปกติข้างในกลับไม่ใช่ companion
+    """
+    basename = path.rsplit("/", 1)[-1].lower()
+    if any(kw in basename for kw in _VISION_KEYWORDS):
+        return "vision"
+    if any(kw in basename for kw in _DRAFT_KEYWORDS):
+        return "draft"
+    return None
+
+
 def _is_companion(basename: str) -> bool:
-    return basename.startswith(_COMPANION_PREFIXES)
+    return basename.startswith(_COMPANION_PREFIXES) or companion_kind(basename) is not None
 
 
 def _strip_shard(stem: str) -> tuple[str, int | None, int | None]:
@@ -163,6 +195,33 @@ def group_quants(files: list[HfFile]) -> list[QuantGroup]:
 
     groups.sort(key=lambda g: g.total_bytes)  # น้อยไปมาก (ข้อ 7) — ผู้ใช้มองหาตัวที่แรมพอก่อน
     return groups
+
+
+def suggest_args(group: QuantGroup, dest_dir: str) -> str:
+    """สร้าง args ของ llama-server จาก companion ที่มี
+
+    - มี draft → "-md <dest_dir>/<ชื่อไฟล์ draft>"
+    - มี vision → "--mmproj <dest_dir>/<ชื่อไฟล์ mmproj>"
+    - มีทั้งคู่ → ต่อกันด้วยช่องว่าง (draft ก่อน)
+    - ไม่มีเลย → ""
+    ⚠️ ห้ามใส่ -c เด็ดขาด (กติกาเหล็กใน CONTEXT.md — llamacpp.sh ใส่ -c จาก ctx ให้แล้ว)
+    ⚠️ ถ้ามี draft หลายตัว ให้เลือกตัวที่ไฟล์เล็กที่สุด (draft ยิ่งเล็กยิ่งเร็ว)
+    """
+    dest = dest_dir.rstrip("/")
+    parts = []
+
+    drafts = group.draft_files
+    if drafts:
+        smallest = min(drafts, key=lambda f: f.size)
+        basename = smallest.path.rsplit("/", 1)[-1]
+        parts.append(f"-md {dest}/{basename}")
+
+    visions = group.vision_files
+    if visions:
+        basename = visions[0].path.rsplit("/", 1)[-1]
+        parts.append(f"--mmproj {dest}/{basename}")
+
+    return " ".join(parts)
 
 
 def resolve_url(repo_id: str, path: str) -> str:

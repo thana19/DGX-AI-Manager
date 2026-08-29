@@ -88,6 +88,16 @@
   .badge-bad{background:rgba(248,81,73,0.12); color:var(--red); border-color:var(--red);}
   .badge-muted{background:rgba(139,148,158,0.12); color:var(--sub); border-color:var(--border);}
 
+  /* ===== instances ===== */
+  #instances-list{display:flex; flex-direction:column; gap:10px;}
+  .instance-row{display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
+  .instance-dot{width:9px; height:9px; border-radius:50%; background:var(--green); flex-shrink:0;}
+  .instance-dot.down{background:var(--red);}
+  .instance-port{font-weight:600; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;}
+  .instance-file{word-break:break-all; flex:1; min-width:120px;}
+  .instance-meta{color:var(--sub); font-size:0.78rem; display:flex; gap:12px; flex-wrap:wrap;}
+  .instance-actions{margin-left:auto;}
+
   /* ===== catalog ===== */
   #catalog-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:14px;}
   .model-card{display:flex; flex-direction:column; gap:8px;}
@@ -188,6 +198,13 @@
 <div class="wrap">
 
   <div id="msgbar"></div>
+
+  <section>
+    <h2>🧠 โมเดลที่โหลดอยู่</h2>
+    <p class="section-hint">instance ที่กำลังรันอยู่จริงตอนนี้บนเครื่อง (llama-server / vLLM / ds4)</p>
+    <div id="instances-list"></div>
+    <div id="instances-status" class="empty-state" style="display:none;"></div>
+  </section>
 
   <section>
     <h2>📚 คลังโมเดล</h2>
@@ -356,6 +373,7 @@
   var state = {
     models: [],
     engines: [],
+    instances: [],
     resolveResult: null,
     resolveRepoId: "",
     downloadsTimer: null
@@ -397,6 +415,84 @@
       }).join("");
     }catch(e){
       el.textContent = "โหลด engine ไม่ได้: " + e.message;
+    }
+  }
+
+  /* ===================== INSTANCES ===================== */
+
+  var MAIN_LLM_PORT = 8000;
+
+  function renderInstanceRow(inst){
+    var isMain = inst.port === MAIN_LLM_PORT;
+    var stopClass = isMain ? "small danger" : "small";
+    var metaParts = [];
+    if(inst.ctx) metaParts.push("ctx: " + escapeHtml(fmtInt(inst.ctx)));
+    metaParts.push("RSS: " + escapeHtml(fmtGB(inst.rss_gb)));
+    return (
+      '<div class="card instance-row" data-port="' + escapeHtml(inst.port) + '">' +
+        '<span class="instance-dot' + (inst.up ? "" : " down") + '" title="' + (inst.up ? "ตอบสนอง" : "ไม่ตอบสนอง") + '"></span>' +
+        '<span class="instance-port">:' + escapeHtml(inst.port) + '</span>' +
+        '<span class="instance-file">' + escapeHtml(inst.model_file || "-") + '</span>' +
+        '<span class="badge badge-muted">' + escapeHtml(inst.engine) + '</span>' +
+        '<div class="instance-meta">' + metaParts.map(function(s){return "<span>"+s+"</span>";}).join("") + '</div>' +
+        '<div class="instance-actions">' +
+          '<button class="' + stopClass + ' btn-instance-stop" data-port="' + escapeHtml(inst.port) + '"' +
+            (isMain ? ' data-main="1"' : '') + '>⏹ หยุด</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderInstances(list){
+    var box = document.getElementById("instances-list");
+    var statusEl = document.getElementById("instances-status");
+    if(!list || list.length === 0){
+      box.innerHTML = "";
+      statusEl.style.display = "block";
+      statusEl.textContent = "— ยังไม่มีโมเดลโหลดอยู่ —";
+      return;
+    }
+    statusEl.style.display = "none";
+    box.innerHTML = list.map(renderInstanceRow).join("");
+    box.querySelectorAll(".btn-instance-stop").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        stopInstance(parseInt(btn.dataset.port, 10), btn.dataset.main === "1", btn);
+      });
+    });
+  }
+
+  async function loadInstances(){
+    try{
+      var data = await apiFetch("/api/instances");
+      state.instances = data.instances || [];
+      renderInstances(state.instances);
+    }catch(e){
+      var statusEl = document.getElementById("instances-status");
+      statusEl.style.display = "block";
+      statusEl.textContent = "โหลดรายการโมเดลที่โหลดอยู่ไม่ได้: " + e.message;
+    }
+  }
+
+  async function stopInstance(port, isMain, btn){
+    var confirmMsg = isMain
+      ? "พอร์ต :8000 คือ LLM หลักที่ thClaws และ client ในเครื่องผูกอยู่เสมอ — หยุดจะทำให้ของที่ใช้งานอยู่ล่มทันที ยืนยันจะหยุดจริง ๆ ใช่ไหม?"
+      : "หยุด instance บนพอร์ต :" + port + "?";
+    if(!confirm(confirmMsg)) return;
+
+    btn.disabled = true;
+    try{
+      var res = await apiFetch("/api/instances/" + port + "/stop", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({allow_main_port: isMain})
+      });
+      showMsg(res.message || (res.ok ? "หยุดแล้ว" : "หยุดไม่สำเร็จ"), res.ok ? "ok" : "error");
+      await loadInstances();
+      await loadModels();
+    }catch(e){
+      showMsg(e.message, "error");
+    }finally{
+      btn.disabled = false;
     }
   }
 
@@ -982,6 +1078,8 @@
   async function init(){
     await Promise.all([loadHealth(), loadEngines()]);
     await loadModels();
+    await loadInstances();
+    setInterval(loadInstances, 10000);
     await pollDownloads();
   }
 

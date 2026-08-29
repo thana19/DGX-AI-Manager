@@ -17,12 +17,14 @@ from server.hf import (
     QuantGroup,
     RepoNotFoundError,
     SearchHit,
+    companion_kind,
     fetch_repo,
     group_quants,
     list_files,
     normalize_repo_id,
     resolve_url,
     search_models,
+    suggest_args,
 )
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -419,3 +421,154 @@ def test_quant_ที่_root_ของ_gpt_oss_20b_ครบ():
 
     assert {"Q4_K_M", "Q8_0", "F16", "UD-Q4_K_XL"} <= keys
     assert len(groups) == 16
+
+
+# ---------------------------------------------------------------------------
+# บั๊กจากของจริง: HauhauCS/Qwen3.8-27B-...-MTP-GGUF (2026-08-29)
+# ไฟล์ draft ชื่อ "...-FastMTP-32K.gguf" ไม่ขึ้นต้นด้วย prefix ไหนเลยใน _COMPANION_PREFIXES
+# ⇒ เคยหายไปเงียบ ๆ ทั้งจาก quant list และ companion list
+# ---------------------------------------------------------------------------
+
+_HAUHAUCS_FIXTURE = {
+    "id": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
+    "gated": False,
+    "siblings": [
+        {
+            "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-FastMTP-32K.gguf",
+            "size": 900_000_000,
+            "lfs": {"sha256": "a" * 64},
+        },
+        {
+            "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf",
+            "size": 10_300_000_000,
+            "lfs": {"sha256": "b" * 64},
+        },
+        {
+            "rfilename": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf",
+            "size": 31_500_000_000,
+            "lfs": {"sha256": "c" * 64},
+        },
+        {
+            "rfilename": "mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
+            "size": 900_000_000,
+            "lfs": {"sha256": "d" * 64},
+        },
+    ],
+}
+
+
+def test_group_quants_hauhaucs_fastmtp_ไม่โผล่เป็น_quant_group():
+    files = list_files(_HAUHAUCS_FIXTURE)
+    groups = group_quants(files)
+
+    keys = {g.key for g in groups}
+    assert "FastMTP-32K" not in keys
+    assert not any("mtp" in k.lower() for k in keys)
+
+
+def test_group_quants_hauhaucs_fastmtp_อยู่ใน_draft_files():
+    files = list_files(_HAUHAUCS_FIXTURE)
+    groups = group_quants(files)
+
+    draft_paths = {f.path for g in groups for f in g.draft_files}
+    assert "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-FastMTP-32K.gguf" in draft_paths
+
+
+def test_group_quants_hauhaucs_mmproj_อยู่ใน_vision_files():
+    files = list_files(_HAUHAUCS_FIXTURE)
+    groups = group_quants(files)
+
+    vision_paths = {f.path for g in groups for f in g.vision_files}
+    assert "mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf" in vision_paths
+
+
+def test_group_quants_hauhaucs_quant_ปกติยังถูกจับครบและไม่รวม_companion():
+    files = list_files(_HAUHAUCS_FIXTURE)
+    groups = group_quants(files)
+
+    by_key = {g.key: g for g in groups}
+    assert set(by_key.keys()) == {"IQ2_M", "Q8_K_P"}
+
+    assert by_key["IQ2_M"].total_bytes == 10_300_000_000
+    assert by_key["Q8_K_P"].total_bytes == 31_500_000_000
+
+    # total_bytes ต้องไม่รวม companion (draft/vision) เข้าไปด้วย
+    for g in groups:
+        assert sum(f.size for f in g.files) == g.total_bytes
+
+
+def test_companion_kind_จับได้ทุก_kind():
+    assert companion_kind("mtp-foo.gguf") == "draft"
+    assert companion_kind("Qwen-Aggressive-FastMTP-32K.gguf") == "draft"  # substring กลางชื่อไฟล์
+    assert companion_kind("dflash-foo.gguf") == "draft"
+    assert companion_kind("eagle-foo.gguf") == "draft"
+    assert companion_kind("eagle3-foo.gguf") == "draft"
+    assert companion_kind("draft-foo.gguf") == "draft"
+    assert companion_kind("mmproj-BF16.gguf") == "vision"
+    assert companion_kind("MMPROJ-bf16.gguf") == "vision"  # case-insensitive
+
+    # quant ปกติ — ต้องไม่ถูกจับผิด
+    assert companion_kind("Q8_K_P.gguf") is None
+    assert companion_kind("Q4_K_M.gguf") is None
+    assert companion_kind("UD-IQ1_S-00001-of-00003.gguf") is None
+
+
+def test_companion_kind_เช็คแค่_basename_ไม่ใช่_path_เต็ม():
+    """กับดัก: โฟลเดอร์ชื่อมีคำว่า MTP แต่ไฟล์ข้างในเป็น quant ปกติ ต้องไม่ถูกจับเป็น companion"""
+    assert companion_kind("Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF/Model-Q4_K_M.gguf") is None
+    # แต่ไฟล์ที่ชื่อจริง ๆ มีคำว่า mtp ต้องยังถูกจับได้ตามปกติ แม้อยู่ในโฟลเดอร์แบบนี้
+    assert companion_kind("Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF/mtp-Model.gguf") == "draft"
+
+
+# ---------------------------------------------------------------------------
+# suggest_args
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_args_ไม่มี_companion_คืนค่าว่าง():
+    group = QuantGroup(key="Q8_0", files=[], total_bytes=0, shard_count=1, companions=[])
+    assert suggest_args(group, "/models/foo") == ""
+
+
+def test_suggest_args_มี_draft_อย่างเดียว():
+    draft = HfFile(path="Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-FastMTP-32K.gguf", size=900_000_000, sha256=None)
+    group = QuantGroup(key="Q8_K_P", files=[], total_bytes=0, shard_count=1, companions=[draft])
+
+    args = suggest_args(group, "/models/HauhauCS")
+    assert args == "-md /models/HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-FastMTP-32K.gguf"
+    assert " -c " not in args and not args.startswith("-c ")
+
+
+def test_suggest_args_มี_vision_อย่างเดียว():
+    mmproj = HfFile(path="mmproj-BF16.gguf", size=900_000_000, sha256=None)
+    group = QuantGroup(key="Q8_0", files=[], total_bytes=0, shard_count=1, companions=[mmproj])
+
+    args = suggest_args(group, "/models/foo")
+    assert args == "--mmproj /models/foo/mmproj-BF16.gguf"
+
+
+def test_suggest_args_มีทั้งสอง_draft_มาก่อน():
+    draft = HfFile(path="mtp-foo.gguf", size=300_000_000, sha256=None)
+    mmproj = HfFile(path="mmproj-BF16.gguf", size=900_000_000, sha256=None)
+    group = QuantGroup(key="Q8_0", files=[], total_bytes=0, shard_count=1, companions=[mmproj, draft])
+
+    args = suggest_args(group, "/models/foo")
+    assert args == "-md /models/foo/mtp-foo.gguf --mmproj /models/foo/mmproj-BF16.gguf"
+
+
+def test_suggest_args_มี_draft_หลายตัวเลือกตัวเล็กสุด():
+    big = HfFile(path="dflash-big.gguf", size=900_000_000, sha256=None)
+    small = HfFile(path="mtp-small.gguf", size=300_000_000, sha256=None)
+    group = QuantGroup(key="Q8_0", files=[], total_bytes=0, shard_count=1, companions=[big, small])
+
+    args = suggest_args(group, "/models/foo")
+    assert args == "-md /models/foo/mtp-small.gguf"
+
+
+def test_suggest_args_ห้ามมี_flag_c():
+    draft = HfFile(path="mtp-foo.gguf", size=300_000_000, sha256=None)
+    mmproj = HfFile(path="mmproj-BF16.gguf", size=900_000_000, sha256=None)
+    group = QuantGroup(key="Q8_0", files=[], total_bytes=0, shard_count=1, companions=[draft, mmproj])
+
+    args = suggest_args(group, "/models/foo")
+    assert "-c" not in args.split()

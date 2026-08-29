@@ -12,7 +12,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from server import catalog, engines, gguf, hf, main
+from server import catalog, engines, gguf, hf, instances, main, software
 
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -429,3 +429,139 @@ def test_activate_ปฏิเสธเมื่อแรมไม่พอ(clie
     r = client.post("/api/activate", json={"id": "glm-5.3-flash-udq1", "port": 8001})
     assert r.status_code == 409
     assert "แรมไม่พอ" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# /api/instances
+# ---------------------------------------------------------------------------
+
+
+def test_list_instances(client, monkeypatch):
+    fake = [
+        instances.Instance(
+            port=8001, engine="llamacpp", pid=123, model_file="m.gguf",
+            model_path="/home/dgx/models/m.gguf", ctx=262144, rss_gb=2.5, up=True,
+        ),
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: fake)
+
+    resp = client.get("/api/instances")
+    assert resp.status_code == 200
+    body = resp.json()["instances"]
+    assert len(body) == 1
+    assert body[0]["port"] == 8001
+    assert body[0]["engine"] == "llamacpp"
+    assert body[0]["model_file"] == "m.gguf"
+    assert body[0]["ctx"] == 262144
+    assert body[0]["up"] is True
+
+
+def test_list_instances_ไม่มี_instance_คืนลิสต์ว่าง(client, monkeypatch):
+    monkeypatch.setattr(instances, "scan", lambda **kw: [])
+    resp = client.get("/api/instances")
+    assert resp.status_code == 200
+    assert resp.json() == {"instances": []}
+
+
+def test_stop_instance_port_8000_ไม่ส่ง_allow_main_port_ต้อง_409(client, monkeypatch):
+    called = {"n": 0}
+    monkeypatch.setattr(instances, "stop", lambda port: called.__setitem__("n", called["n"] + 1) or (True, "หยุดแล้ว"))
+
+    resp = client.post("/api/instances/8000/stop", json={})
+    assert resp.status_code == 409
+    assert "8000" in resp.json()["detail"]
+    assert called["n"] == 0  # ต้องปฏิเสธก่อนเรียก stop() จริง
+
+
+def test_stop_instance_port_8000_ไม่ส่ง_body_เลยก็ต้อง_409(client, monkeypatch):
+    monkeypatch.setattr(instances, "stop", lambda port: (True, "หยุดแล้ว"))
+    resp = client.post("/api/instances/8000/stop")
+    assert resp.status_code == 409
+
+
+def test_stop_instance_port_8000_ส่ง_allow_main_port_ผ่านเข้าไปเรียก_stop(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(instances, "stop", lambda port: calls.append(port) or (True, "หยุดแล้ว"))
+    monkeypatch.setattr(software, "mem_available_gb", lambda: None)
+
+    resp = client.post("/api/instances/8000/stop", json={"allow_main_port": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert calls == [8000]
+
+
+def test_stop_instance_พอร์ตนอกช่วง_8000_8009_คืน_400(client, monkeypatch):
+    called = {"n": 0}
+    monkeypatch.setattr(instances, "stop", lambda port: called.__setitem__("n", called["n"] + 1) or (True, "หยุดแล้ว"))
+
+    resp = client.post("/api/instances/9999/stop", json={})
+    assert resp.status_code == 400
+    assert called["n"] == 0
+
+
+def test_stop_instance_พอร์ตธรรมดา_สำเร็จ(client, monkeypatch):
+    monkeypatch.setattr(instances, "stop", lambda port: (True, f"หยุด instance บนพอร์ต {port} แล้ว"))
+    monkeypatch.setattr(software, "mem_available_gb", lambda: None)
+
+    resp = client.post("/api/instances/8001/stop", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert "8001" in body["message"]
+
+
+def test_stop_instance_ไม่มีอะไรบนพอร์ต_คืน_ok_false(client, monkeypatch):
+    monkeypatch.setattr(instances, "stop", lambda port: (False, f"ไม่มี instance บนพอร์ต {port} อยู่แล้ว"))
+
+    resp = client.post("/api/instances/8001/stop", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert "ไม่มี instance" in body["message"]
+
+
+def test_stop_instance_แสดงแรมที่คืนได้(client, monkeypatch):
+    monkeypatch.setattr(instances, "stop", lambda port: (True, "หยุด instance บนพอร์ต 8001 แล้ว"))
+    values = iter([10.0, 25.0])  # ก่อน 10GB ว่าง หลัง 25GB ว่าง → คืนแรมมาราว 15GB
+    monkeypatch.setattr(software, "mem_available_gb", lambda: next(values))
+
+    resp = client.post("/api/instances/8001/stop", json={})
+    assert resp.status_code == 200
+    assert "15 GB" in resp.json()["message"]
+
+
+# --- draft model โหลดไม่ขึ้น → ลองใหม่โดยถอด draft ออก (เจอจริง 2026-08-29) -----
+
+
+def test_strip_draft_ตัด_md_และ_spec_type_แต่เก็บ_mmproj():
+    from server.main import _strip_draft, _has_draft, _draft_failed
+
+    args = "-md ~/m/FastMTP-32K.gguf --mmproj ~/m/mmproj.gguf --spec-type draft-mtp"
+    out = _strip_draft(args)
+
+    assert "-md" not in out
+    assert "--spec-type" not in out
+    assert out == "--mmproj ~/m/mmproj.gguf"
+    assert _has_draft(args) and not _has_draft(out)
+
+
+def test_draft_failed_จับข้อความจริงของ_llamacpp():
+    from server.main import _draft_failed
+
+    real_log = (
+        "E llama_model_load: error loading model: check_tensor_dims: tensor "
+        "'output.weight' has wrong shape; expected 5120, 248320, got 5120, 32768\n"
+        "E srv load_model: failed to load draft model, '/home/dgx/models/.../FastMTP-32K.gguf'"
+    )
+
+    assert _draft_failed(real_log)
+    assert not _draft_failed("I srv load_model: loaded multimodal model")
+
+
+def test_has_draft_ไม่จับ_flag_อื่นที่ขึ้นต้นคล้ายกัน():
+    from server.main import _has_draft
+
+    assert not _has_draft("--mmproj ~/x.gguf")
+    assert not _has_draft("--model-draft-something ~/x.gguf")
+    assert _has_draft("-md ~/x.gguf")

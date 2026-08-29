@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import catalog, downloads, engines, gguf, hf, paths, software
+from . import catalog, downloads, engines, gguf, hf, instances, paths, software
 
 APP_VERSION = "2.0.0-phase1"
 DEFAULT_PORT = int(os.environ.get("AISERVER2_PORT", "9001"))
@@ -359,6 +359,61 @@ def list_software() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# /api/instances — instance ที่กำลังรันอยู่จริง (llama-server/ds4-server/vLLM) + หยุดได้
+# ---------------------------------------------------------------------------
+
+
+_STOPPABLE_PORT_MIN, _STOPPABLE_PORT_MAX = 8000, 8009
+
+
+def _instance_to_api(inst: instances.Instance) -> dict[str, Any]:
+    return {
+        "port": inst.port, "engine": inst.engine, "pid": inst.pid,
+        "model_file": inst.model_file, "model_path": inst.model_path,
+        "ctx": inst.ctx, "rss_gb": inst.rss_gb, "up": inst.up,
+    }
+
+
+@app.get("/api/instances")
+def list_instances() -> dict[str, Any]:
+    return {"instances": [_instance_to_api(i) for i in instances.scan()]}
+
+
+class InstanceStopReq(BaseModel):
+    allow_main_port: bool = False
+
+
+@app.post("/api/instances/{port}/stop")
+def stop_instance(port: int, req: InstanceStopReq | None = None) -> dict[str, Any]:
+    if port < _STOPPABLE_PORT_MIN or port > _STOPPABLE_PORT_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"สั่งหยุดพอร์ต {port} ไม่ได้ — สั่งได้เฉพาะช่วง {_STOPPABLE_PORT_MIN}-{_STOPPABLE_PORT_MAX} เท่านั้น (กันสั่งฆ่าบริการอื่นในเครื่อง)",
+        )
+
+    allow_main_port = req.allow_main_port if req is not None else False
+    if port == _MAIN_LLM_PORT and not allow_main_port:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "พอร์ต 8000 คือ LLM หลักที่ thClaws และ client ในเครื่องผูกอยู่เสมอ (กติกาเหล็ก) — "
+                "หยุดตัวนี้จะทำให้ของที่ใช้งานอยู่ล่ม ถ้าตั้งใจสลับ/หยุดโมเดลหลักจริง ๆ ให้ส่ง allow_main_port เป็น true"
+            ),
+        )
+
+    before = software.mem_available_gb()
+    ok, message = instances.stop(port)
+    if ok and before is not None:
+        after = software.mem_available_gb()
+        if after is not None:
+            freed = after - before
+            if freed > 0.5:
+                message = f"{message} (คืนแรมไปได้ราว {freed:.0f} GB)"
+
+    return {"ok": ok, "message": message}
+
+
+# ---------------------------------------------------------------------------
 # /api/activate
 # ---------------------------------------------------------------------------
 
@@ -410,6 +465,25 @@ def _ram_hogs() -> str:
     if not hogs:
         return ""
     return " และ ".join(hogs)
+
+
+# draft model โหลดไม่ขึ้นแบบที่ยังกู้ได้ — ข้อความที่ llama.cpp ใช้จริงเมื่อ draft ไม่เข้ากับโมเดลหลัก
+_DRAFT_FAIL_MARKERS = ("failed to load draft model", "check_tensor_dims")
+
+
+def _draft_failed(log_text: str) -> bool:
+    return any(m in log_text for m in _DRAFT_FAIL_MARKERS)
+
+
+def _has_draft(args: str) -> bool:
+    return bool(re.search(r"(?:^|\s)-md(?:\s|$)", args or ""))
+
+
+def _strip_draft(args: str) -> str:
+    """ตัด -md <path> และ --spec-type <x> ออก เหลือ flag อื่น (เช่น --mmproj) ไว้ครบ"""
+    out = re.sub(r"(?:^|\s)-md\s+\S+", " ", args or "")
+    out = re.sub(r"(?:^|\s)--spec-type\s+\S+", " ", out)
+    return " ".join(out.split())
 
 
 @app.post("/api/activate")
@@ -485,6 +559,25 @@ def activate(req: ActivateReq) -> dict[str, Any]:
     log_tail = _read_tail(_read_log_file(log_path) or proc_output)
 
     success = proc.returncode == 0 and "READY" in proc_output
+    dropped_draft = False
+
+    # draft model โหลดไม่ขึ้น = ยังกู้ได้ — โมเดลหลักไม่ผิดอะไร แค่เสียความเร็วที่ควรได้
+    # (เจอจริง: FastMTP ตัด vocab เหลือ 32768 แต่โมเดลหลักมี 248320 → build 10696 ปฏิเสธ)
+    if not success and _draft_failed(log_tail + "\n" + proc_output) and _has_draft(entry.args):
+        args_list = [catalog.expand(entry)] + [
+            os.path.expanduser(tok) for tok in shlex.split(_strip_draft(entry.args))
+        ]
+        try:
+            proc = subprocess.run(
+                [script, *args_list], env=env, capture_output=True, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=500, detail=f"รัน {entry.engine}.sh เกินเวลา (600 วินาที)") from None
+        proc_output = (proc.stdout or "") + (proc.stderr or "")
+        log_tail = _read_tail(_read_log_file(log_path) or proc_output)
+        success = proc.returncode == 0 and "READY" in proc_output
+        dropped_draft = success
+
     if not success:
         unsupported_arch = engines.learn_from_log(log_tail + "\n" + proc_output)
         if unsupported_arch and entry.engine == "llamacpp" and info is not None:
@@ -494,7 +587,13 @@ def activate(req: ActivateReq) -> dict[str, Any]:
             detail=f"โหลด {entry.id} ขึ้นแรมไม่สำเร็จ (พอร์ต {req.port}): {log_tail[-500:] or proc_output[-500:] or 'ไม่มี log'}",
         )
 
-    return {"ok": True, "port": req.port, "log": log_tail}
+    result = {"ok": True, "port": req.port, "log": log_tail}
+    if dropped_draft:
+        result["warning"] = (
+            "โหลดสำเร็จ แต่ถอด draft model (-md) ออก เพราะ engine รุ่นนี้โหลดมันไม่ได้ "
+            "— โมเดลหลักทำงานปกติ แค่ไม่ได้ความเร็วเพิ่มจาก speculative decoding"
+        )
+    return result
 
 
 def _read_log_file(log_path: str | None) -> str | None:
