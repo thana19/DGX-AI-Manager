@@ -487,6 +487,49 @@ def _fetch_v1_models(base_url: str, client: httpx.Client) -> list[str] | None:
     return [it["id"] for it in items if isinstance(it, dict) and isinstance(it.get("id"), str)]
 
 
+def _fetch_gateway_routes(base_url: str, client: httpx.Client) -> dict[str, int | None] | None:
+    """ถาม LiteLLM ว่าชื่อโมเดลแต่ละตัว route ไปพอร์ตไหน — {model_name: port}
+
+    ใช้ /model/info ที่คืน litellm_params.api_base มาด้วย (เช่น http://127.0.0.1:8001/v1)
+    จับคู่ด้วย "พอร์ตปลายทางจริง" ไม่ใช่ชื่อ เพราะชื่อที่ตั้งไว้ใน LiteLLM ไม่แน่นอน:
+    บางตัวตั้งตามชื่อไฟล์ (Qwen3.8-...-Q8_K_P) บางตัวตั้งตาม id ใน catalog
+    (qwen3.8-flash-next-udq2) — เทียบชื่อจึงพลาดได้ง่าย (เจอกับตัวจริงมาแล้ว)
+
+    คืน None ถ้าถามไม่ได้ → ผู้เรียก fallback ไปเทียบชื่อแบบเดิม
+    """
+    try:
+        resp = client.get(
+            f"{base_url}/model/info",
+            headers={"Authorization": "Bearer sk-local"},
+            timeout=_ENDPOINTS_TIMEOUT_SEC,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    rows = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return None
+
+    routes: dict[str, int | None] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("model_name")
+        if not isinstance(name, str):
+            continue
+        api_base = (row.get("litellm_params") or {}).get("api_base")
+        port = None
+        if isinstance(api_base, str):
+            try:
+                port = urllib.parse.urlsplit(api_base).port
+            except ValueError:
+                port = None
+        routes[name] = port
+    return routes or None
+
+
 def _normalize_model_name(name: str) -> str:
     """ตัดนามสกุล .gguf ออกแล้ว lowercase — ไว้เทียบชื่อโมเดลของ gateway กับ model_file ของ instance จริง
 
@@ -513,10 +556,18 @@ def list_endpoints() -> dict[str, Any]:
     with httpx.Client() as client:
         gateway_ids = _fetch_v1_models(_LITELLM_URL, client)
 
+        # ทางที่แม่นที่สุด: ถาม LiteLLM ว่าแต่ละชื่อ route ไปพอร์ตไหน แล้วเทียบกับพอร์ตที่มี instance รันอยู่
+        routes = _fetch_gateway_routes(_LITELLM_URL, client)
+        live_ports = {i.port for i in scanned}
+
         models_out = []
         recommended_model: str | None = None
         for mid in gateway_ids or []:
-            live = _normalize_model_name(mid) in live_names
+            if routes is not None and mid in routes:
+                live = routes[mid] in live_ports
+            else:
+                # LiteLLM ตอบ /model/info ไม่ได้ → ถอยไปเทียบชื่อ (แม่นน้อยกว่าแต่ดีกว่าไม่มี)
+                live = _normalize_model_name(mid) in live_names
             if live and recommended_model is None:
                 recommended_model = mid
             models_out.append({"id": mid, "live": live})

@@ -866,3 +866,49 @@ def test_endpoints_พอร์ต_gateway_ตามที่ตั้งใน_
 
     monkeypatch.setattr(m, "_LITELLM_URL", "http://127.0.0.1")
     assert m._litellm_port() == 4000
+
+
+# --- จับคู่ gateway ด้วยพอร์ต ไม่ใช่ชื่อ (เจอจริง 2026-08-29 18:47) ---------
+# ชื่อที่ LiteLLM ตั้งไม่แน่นอน: บางตัวตามชื่อไฟล์ บางตัวตาม id ใน catalog
+# ทำให้เทียบชื่อแล้ว live=false ทั้งที่โมเดลรันอยู่จริง → dropdown ในหน้าเว็บว่าง
+
+
+def test_gateway_live_ตัดสินจากพอร์ตปลายทาง_ไม่ใช่ชื่อ(client, monkeypatch):
+    from server import instances as ins
+    from server import main as m
+
+    # ชื่อใน gateway (qwen3.8-flash-next-udq2) ไม่ตรงกับชื่อไฟล์เลย แต่ route ไป :8001 ที่รันอยู่
+    monkeypatch.setattr(ins, "scan", lambda **kw: [
+        ins.Instance(port=8001, engine="llamacpp", pid=1,
+                     model_file="Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf",
+                     model_path="/m/x.gguf", ctx=32768, rss_gb=2.0, up=True),
+    ])
+    monkeypatch.setattr(m, "_fetch_v1_models",
+                        lambda base, c: ["qwen3.8-flash-next-udq2", "qwen38"] if ":4000" in base else ["/m/x.gguf"])
+    monkeypatch.setattr(m, "_fetch_gateway_routes",
+                        lambda base, c: {"qwen3.8-flash-next-udq2": 8001, "qwen38": 8000})
+
+    gw = client.get("/api/endpoints").json()["gateway"]
+
+    assert {x["id"]: x["live"] for x in gw["models"]} == {
+        "qwen3.8-flash-next-udq2": True,   # route ไป :8001 ที่รันอยู่
+        "qwen38": False,                   # route ไป :8000 ที่ว่าง
+    }
+    assert gw["recommended_model"] == "qwen3.8-flash-next-udq2"
+
+
+def test_gateway_ถอยไปเทียบชื่อเมื่อ_model_info_ใช้ไม่ได้(client, monkeypatch):
+    from server import instances as ins
+    from server import main as m
+
+    monkeypatch.setattr(ins, "scan", lambda **kw: [
+        ins.Instance(port=8001, engine="llamacpp", pid=1, model_file="MyModel-Q8_0.gguf",
+                     model_path="/m/MyModel-Q8_0.gguf", ctx=4096, rss_gb=1.0, up=True),
+    ])
+    monkeypatch.setattr(m, "_fetch_v1_models",
+                        lambda base, c: ["MyModel-Q8_0"] if ":4000" in base else ["/m/MyModel-Q8_0.gguf"])
+    monkeypatch.setattr(m, "_fetch_gateway_routes", lambda base, c: None)  # LiteLLM เก่า/ตอบไม่ได้
+
+    gw = client.get("/api/endpoints").json()["gateway"]
+
+    assert gw["recommended_model"] == "MyModel-Q8_0", "fallback เทียบชื่อต้องยังทำงาน"
