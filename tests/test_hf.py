@@ -16,10 +16,13 @@ from server.hf import (
     HfFile,
     QuantGroup,
     RepoNotFoundError,
+    SearchHit,
     fetch_repo,
     group_quants,
     list_files,
+    normalize_repo_id,
     resolve_url,
+    search_models,
 )
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -308,3 +311,111 @@ def test_resolve_url_subfolder_file():
         "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/"
         "UD-IQ1_S/GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf"
     )
+
+
+# ---------------------------------------------------------------------------
+# normalize_repo_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("unsloth/Xxx-GGUF", ("unsloth/Xxx-GGUF", "Xxx-GGUF")),
+        ("https://huggingface.co/unsloth/Xxx?a=1", ("unsloth/Xxx", "Xxx")),
+        ("https://huggingface.co/unsloth/Xxx/tree/main", ("unsloth/Xxx", "Xxx")),
+        ("https://github.com/openai/gpt-oss?utm_source=chatgpt.com", (None, "gpt-oss")),
+        ("gpt oss 20b", (None, "gpt oss 20b")),
+        ("", (None, "")),
+        ("  org/repo/  ", ("org/repo", "repo")),
+    ],
+)
+def test_normalize_repo_id_cases(text, expected):
+    assert normalize_repo_id(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# search_models
+# ---------------------------------------------------------------------------
+
+
+def test_search_models_ranks_gguf_first_even_with_fewer_downloads():
+    payload = [
+        {"id": "some-org/Big-Model", "downloads": 999999, "likes": 10, "gated": False, "tags": []},
+        {"id": "unsloth/Small-Model-GGUF", "downloads": 5, "likes": 1, "gated": False, "tags": ["gguf"]},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    hits = search_models("model", client=client)
+
+    assert [h.id for h in hits] == ["unsloth/Small-Model-GGUF", "some-org/Big-Model"]
+    assert all(isinstance(h, SearchHit) for h in hits)
+    assert hits[0].is_gguf is True
+    assert hits[1].is_gguf is False
+
+
+def test_search_models_empty_query_returns_empty_without_http():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=[])
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    hits = search_models("", client=client)
+
+    assert hits == []
+    assert calls == []  # ห้ามยิง HTTP request เลยเมื่อ query ว่าง
+
+
+def test_search_models_sends_bearer_token_when_given():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json=[])
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    search_models("gpt oss", token="hf_secrettoken", client=client)
+
+    assert seen["auth"] == "Bearer hf_secrettoken"
+
+
+# --- บั๊กจากของจริง: gpt-oss (2026-08-29) ---------------------------------
+# เคยถูก revert ไปครั้งหนึ่ง — test นี้ล็อกไว้ไม่ให้หายอีก
+
+
+def _load(name):
+    import json, pathlib
+    p = pathlib.Path(__file__).parent / "fixtures" / name
+    return list_files(json.loads(p.read_text()))
+
+
+def test_รู้จัก_quant_แบบ_MXFP4_ไม่งั้นโมเดลจริงหายทั้งตัว():
+    """gpt-oss-120b-MXFP4.gguf = 63.4GB คือตัวโมเดลจริง ถ้า regex ไม่รู้จักจะหายไปเงียบ ๆ"""
+    groups = group_quants(_load("hf_gpt-oss-120b-gguf_blobs.json"))
+    keys = {g.key for g in groups}
+
+    assert "MXFP4" in keys, f"MXFP4 หายไป เหลือแค่ {keys}"
+    mxfp4 = next(g for g in groups if g.key == "MXFP4")
+    assert mxfp4.total_bytes > 60e9
+
+
+def test_eagle3_เป็น_draft_head_ไม่ใช่_quant():
+    """ไม่กันไว้ = ผู้ใช้เลือก 'Q8_0 0.8GB' แล้วได้ draft head แทนโมเดลจริง"""
+    groups = group_quants(_load("hf_gpt-oss-120b-gguf_blobs.json"))
+
+    assert {g.key for g in groups} == {"MXFP4"}, "eagle3-* ต้องไม่กลายเป็น quant group"
+    companions = {c.path for c in groups[0].companions}
+    assert any(c.startswith("eagle3-") for c in companions)
+
+
+def test_quant_ที่_root_ของ_gpt_oss_20b_ครบ():
+    groups = group_quants(_load("hf_gpt-oss-20b-gguf_blobs.json"))
+    keys = {g.key for g in groups}
+
+    assert {"Q4_K_M", "Q8_0", "F16", "UD-Q4_K_XL"} <= keys
+    assert len(groups) == 16

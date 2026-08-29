@@ -160,14 +160,50 @@ class ResolveReq(BaseModel):
     token: str | None = None
 
 
+def _resolve_suggestions_response(req: ResolveReq, query: str, message: str) -> dict[str, Any]:
+    """สร้าง response แบบ "ไม่พบ repo ตรง ๆ" พร้อมผลค้นหาสำรอง — ใช้ทั้งเคส normalize ไม่ได้ repo_id
+    และเคส fetch_repo แล้วเจอ RepoNotFoundError (ดู task ส่วนที่ 2 ข้อ 3)
+    """
+    hits = hf.search_models(query, token=req.token) if query else []
+    if not hits:
+        raise HTTPException(
+            status_code=404,
+            detail=f'ไม่พบ repo: {req.repo_id} (ค้นด้วยคำว่า "{query}" แล้วไม่พบผลลัพธ์ที่ใกล้เคียง)',
+        )
+    return {
+        "repo_id": req.repo_id,
+        "resolved_repo_id": None,
+        "gated": False,
+        "arch": None,
+        "ctx_train": None,
+        "quants": [],
+        "companions": [],
+        "query": query,
+        "suggestions": [
+            {
+                "id": h.id, "downloads": h.downloads, "likes": h.likes,
+                "gated": h.gated, "is_gguf": h.is_gguf, "pipeline_tag": h.pipeline_tag,
+            }
+            for h in hits
+        ],
+        "message": message,
+    }
+
+
 @app.post("/api/models/resolve")
 def resolve_model(req: ResolveReq) -> dict[str, Any]:
+    resolved_id, query = hf.normalize_repo_id(req.repo_id)
+    suggest_message = "ไม่พบ repo ตรง ๆ — นี่คือผลค้นหาที่ใกล้เคียง เลือกสักตัวแล้วกดตรวจสอบอีกครั้ง"
+
+    if resolved_id is None:
+        return _resolve_suggestions_response(req, query, suggest_message)
+
     try:
-        repo_json = hf.fetch_repo(req.repo_id, token=req.token)
+        repo_json = hf.fetch_repo(resolved_id, token=req.token)
     except hf.GatedRepoError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    except hf.RepoNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    except hf.RepoNotFoundError:
+        return _resolve_suggestions_response(req, query, suggest_message)
 
     files = hf.list_files(repo_json)
     groups = hf.group_quants(files)
@@ -180,7 +216,7 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
     ctx_train: int | None = None
     if groups:
         smallest = min(groups, key=lambda g: g.total_bytes)
-        url = hf.resolve_url(req.repo_id, smallest.files[0].path)
+        url = hf.resolve_url(resolved_id, smallest.files[0].path)
         try:
             gguf_info, _total = gguf.fetch_header(url)
             arch = gguf_info.arch
@@ -209,11 +245,15 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
 
     return {
         "repo_id": req.repo_id,
+        "resolved_repo_id": resolved_id,
         "gated": False,
         "arch": arch,
         "ctx_train": ctx_train,
         "quants": quants,
         "companions": companions,
+        "query": query,
+        "suggestions": [],
+        "message": None,
     }
 
 

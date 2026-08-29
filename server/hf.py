@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -19,14 +19,20 @@ RESOLVE_BASE = "https://huggingface.co"
 
 # ไฟล์ที่ไปคู่กับ quant แต่ไม่ใช่ quant เอง — mmproj (vision), mtp/dflash (draft model)
 # ใช้ร่วมกันได้หลาย quant ⇒ แยกออกจาก quant group เสมอ ไม่ว่าจะอยู่โฟลเดอร์ไหน
-_COMPANION_PREFIXES = ("mmproj-", "mtp-", "dflash-")
+# eagle3- = speculative draft head ของ gpt-oss (เจอจริงใน ggml-org/gpt-oss-120b-GGUF)
+# ไม่กันไว้ = ผู้ใช้เห็น "Q8_0 0.8GB" แล้วเลือกไปโหลด ได้ draft head แทนโมเดลจริง 63GB
+_COMPANION_PREFIXES = ("mmproj-", "mtp-", "dflash-", "eagle3-", "eagle-", "draft-")
 
 # shard suffix แบบ "...-00001-of-00003.gguf" — ใช้ตัดท้ายก่อนหาชื่อ quant และหา shard_count
 _SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d+)-of-(?P<total>\d+)$")
 
 # ชื่อ quant ที่อยู่ในชื่อไฟล์ root (ไม่มีโฟลเดอร์ย่อย) — เอาแค่ token ท้ายสุดของ stem
 # รูปแบบที่พบจริง: UD-Q4_K_XL, UD-IQ1_M, IQ2_XXS, Q8_0, Q4_0, BF16, F16, F32
-_QUANT_RE = re.compile(r"(?:(?:UD-)?(?:IQ|Q)\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32)$")
+_QUANT_RE = re.compile(
+    r"(?:(?:UD-)?(?:IQ|Q|TQ)\d+(?:_[A-Za-z0-9]+)*"   # UD-Q4_K_XL, IQ2_XXS, Q8_0, TQ1_0
+    r"|(?:MX|NV)?FP\d+(?:_[A-Za-z0-9]+)*"            # MXFP4 (gpt-oss), NVFP4, FP8
+    r"|BF16|F16|F32)$"
+)
 
 
 class GatedRepoError(Exception):
@@ -162,3 +168,130 @@ def group_quants(files: list[HfFile]) -> list[QuantGroup]:
 def resolve_url(repo_id: str, path: str) -> str:
     """URL ดาวน์โหลดไฟล์จริงจาก path ใน repo (รวมกรณีมีโฟลเดอร์ย่อย)"""
     return f"{RESOLVE_BASE}/{repo_id}/resolve/main/{quote(path, safe='/')}"
+
+
+# ---------------------------------------------------------------------------
+# normalize_repo_id / search_models — ผู้ใช้วางลิงก์ GitHub หรือพิมพ์ชื่อโมเดลเปล่า ๆ
+# มาแทน HF repo id จริง (เช่น "github.com/openai/gpt-oss" ทั้งที่ repo จริงชื่อ
+# "openai/gpt-oss-20b") ⇒ เดา repo_id ตรง ๆ ไม่ได้ ต้องค้นหาแล้วให้ผู้ใช้เลือกเอง
+# ---------------------------------------------------------------------------
+
+_HF_HOSTS = {"huggingface.co", "www.huggingface.co"}
+
+# เครื่องหมาย/ช่องว่างท้ายข้อความที่ตัดทิ้งได้เสมอ (เช่น "org/repo/  " ที่มี "/" ต่อท้าย)
+_TRAILING_JUNK_RE = re.compile(r"[\s/.,;:!]+$")
+
+# org/repo แบบข้อความล้วน (ไม่ใช่ URL) — ตัวอักษร/ตัวเลข/จุด/ขีด อย่างละ 1 กลุ่ม คั่นด้วย "/" เดียว
+_PLAIN_REPO_ID_RE = re.compile(r"^[\w.\-]+/[\w.\-]+$")
+
+
+@dataclass
+class SearchHit:
+    """ผลค้นหา 1 รายการจาก HF search API"""
+
+    id: str
+    downloads: int
+    likes: int
+    gated: bool
+    is_gguf: bool
+    pipeline_tag: str | None
+
+
+def normalize_repo_id(text: str) -> tuple[str | None, str]:
+    """แปลงสิ่งที่ผู้ใช้วางมาเป็น (repo_id ถ้าเป็น HF ได้, คำค้นสำรอง)
+
+    รับได้:
+      "unsloth/Xxx-GGUF"                              → ("unsloth/Xxx-GGUF", "Xxx-GGUF")
+      "https://huggingface.co/unsloth/Xxx?a=1"        → ("unsloth/Xxx", "Xxx")
+      "https://huggingface.co/unsloth/Xxx/tree/main"  → ("unsloth/Xxx", "Xxx")
+      "https://github.com/openai/gpt-oss?utm_source=" → (None, "gpt-oss")
+      "gpt oss 20b"                                   → (None, "gpt oss 20b")
+      ""                                               → (None, "")
+    กติกา: ตัด query string / fragment / เครื่องหมายท้าย / ช่องว่างหัวท้ายเสมอ
+           host ที่ไม่ใช่ huggingface.co ⇒ ไม่ใช่ repo_id (คืน None) แต่เอาส่วนท้าย path เป็นคำค้น
+           path ของ HF ที่ยาวเกิน org/repo (เช่น /tree/main, /blob/...) ให้ตัดเหลือ org/repo
+           กรณี "  org/repo/  " (มี / ต่อท้าย + ช่องว่างหัวท้าย) ก็ต้องได้ ("org/repo", "repo")
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None, ""
+
+    # ตัด query string / fragment ทิ้งก่อนเสมอ ไม่ว่าจะเป็น URL เต็มหรือ path เปล่า ๆ
+    raw = re.split(r"[?#]", raw, maxsplit=1)[0].strip()
+    if not raw:
+        return None, ""
+
+    if re.match(r"^https?://", raw, re.IGNORECASE):
+        parsed = urlparse(raw)
+        host = parsed.netloc.lower()
+        parts = [p for p in parsed.path.split("/") if p]
+
+        if host in _HF_HOSTS:
+            if len(parts) >= 2:
+                repo_id = f"{parts[0]}/{parts[1]}"
+                return repo_id, parts[1]
+            if len(parts) == 1:
+                return None, parts[0]
+            return None, ""
+
+        # host อื่น (github.com ฯลฯ) ไม่ใช่ HF ⇒ เอา path ท้ายสุดมาเป็นคำค้นแทน
+        query = parts[-1] if parts else host
+        return None, query
+
+    # ไม่ใช่ URL — ตัดเครื่องหมาย/ช่องว่างท้ายออกก่อนเช็คว่าเป็น org/repo หรือเปล่า
+    candidate = _TRAILING_JUNK_RE.sub("", raw)
+    if _PLAIN_REPO_ID_RE.match(candidate):
+        return candidate, candidate.split("/")[-1]
+
+    # คำค้นธรรมดา (พิมพ์ชื่อโมเดลมาเฉย ๆ) — คืนตามที่ผู้ใช้พิมพ์ (ตัด query/fragment ไปแล้ว)
+    return None, raw
+
+
+def search_models(
+    query: str, *, limit: int = 12, token: str | None = None, client: httpx.Client | None = None
+) -> list[SearchHit]:
+    """ค้น HF: GET https://huggingface.co/api/models?search=<q>&sort=downloads&direction=-1&limit=<n>
+    ถ้ามี token ใส่ header Authorization: Bearer <token>
+
+    เรียงผลลัพธ์: GGUF ขึ้นก่อนเสมอ แล้วค่อยเรียงตาม downloads มากไปน้อย
+    (เหตุผล: engine หลักของเครื่องนี้คือ llama.cpp ซึ่งกิน GGUF เท่านั้น)
+    is_gguf: id ลงท้ายด้วย "-GGUF"/"-gguf" หรือมี "gguf" ใน tags ของผลลัพธ์
+    query ว่าง → คืน [] ทันที (ห้ามยิง HTTP request เลย)
+    ใช้ client ที่ส่งเข้ามาถ้ามี (สำหรับ test), ไม่งั้นสร้าง httpx.Client() เอง แล้วปิดให้เรียบร้อย
+    """
+    if not query:
+        return []
+
+    own_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        resp = http_client.get(
+            API_BASE,
+            params={"search": query, "sort": "downloads", "direction": "-1", "limit": limit},
+            headers=headers,
+        )
+        resp.raise_for_status()
+        results = resp.json()
+    finally:
+        if own_client:
+            http_client.close()
+
+    hits = []
+    for item in results:
+        repo_id = item.get("id") or item.get("modelId") or ""
+        tags = item.get("tags") or []
+        is_gguf = repo_id.lower().endswith("-gguf") or any("gguf" in str(t).lower() for t in tags)
+        hits.append(
+            SearchHit(
+                id=repo_id,
+                downloads=item.get("downloads") or 0,
+                likes=item.get("likes") or 0,
+                gated=bool(item.get("gated", False)),
+                is_gguf=is_gguf,
+                pipeline_tag=item.get("pipeline_tag"),
+            )
+        )
+
+    hits.sort(key=lambda h: (not h.is_gguf, -h.downloads))
+    return hits

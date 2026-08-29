@@ -123,6 +123,14 @@
   }
   .resolve-info b{color:var(--text);}
   .companions{font-size:0.78rem; color:var(--sub); margin:6px 0 0;}
+  .suggestions-list{display:flex; flex-direction:column; gap:8px; margin-top:4px;}
+  .suggestion-row{
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
+    background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px;
+  }
+  .suggestion-main{display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0;}
+  .suggestion-id{font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:0.86rem; word-break:break-all;}
+  .suggestion-meta{font-size:0.78rem; color:var(--sub); white-space:nowrap;}
   table{width:100%; border-collapse:collapse; font-size:0.86rem;}
   th, td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--border); white-space:nowrap;}
   th{color:var(--sub); font-weight:600; font-size:0.76rem; text-transform:uppercase; letter-spacing:0.02em;}
@@ -207,6 +215,7 @@
 
       <div id="resolve-result" style="display:none;">
         <div class="resolve-info" id="resolve-info"></div>
+        <div id="resolve-suggestions" style="display:none;"></div>
         <div class="table-scroll">
           <table>
             <thead>
@@ -273,6 +282,11 @@
   function fmtGB(v){
     if(v === null || v === undefined || isNaN(v)) return "-";
     return Number(v).toFixed(1) + " GB";
+  }
+
+  function fmtInt(n){
+    if(n === null || n === undefined || isNaN(n)) return "-";
+    return Number(n).toLocaleString("en-US");
   }
 
   function fmtBytesGB(bytes){
@@ -631,13 +645,80 @@
     }
   }
 
+  // กดปุ่ม "ตรวจสอบตัวนี้" จากรายการผลค้นหา → เอา id แถวนั้นใส่ช่อง แล้วยิง resolve ใหม่ทันที
+  function resolveRepoWithId(repoId){
+    document.getElementById("resolve-repo").value = repoId;
+    resolveRepo();
+  }
+
+  function renderSuggestions(data){
+    var box = document.getElementById("resolve-suggestions");
+    var suggestions = data.suggestions || [];
+
+    var rowsHtml = suggestions.map(function(s){
+      var badges = "";
+      if(s.is_gguf) badges += ' <span class="badge badge-ok">GGUF</span>';
+      if(s.gated) badges += ' <span class="badge badge-warn">🔒</span>';
+      return (
+        '<div class="suggestion-row">' +
+          '<div class="suggestion-main">' +
+            '<span class="suggestion-id">' + escapeHtml(s.id) + '</span>' + badges +
+          '</div>' +
+          '<div class="suggestion-meta">⬇ ' + escapeHtml(fmtInt(s.downloads)) + ' ครั้ง</div>' +
+          '<button class="small primary btn-suggestion-pick" data-id="' + escapeHtml(s.id) + '">ตรวจสอบตัวนี้</button>' +
+        '</div>'
+      );
+    }).join("");
+
+    box.innerHTML =
+      (data.message ? '<p class="section-hint">' + escapeHtml(data.message) + '</p>' : "") +
+      '<div class="suggestions-list">' + rowsHtml + '</div>';
+
+    box.querySelectorAll(".btn-suggestion-pick").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        resolveRepoWithId(btn.dataset.id);
+      });
+    });
+  }
+
   function renderResolveResult(data){
     var infoEl = document.getElementById("resolve-info");
+    var suggestionsBox = document.getElementById("resolve-suggestions");
+    var tableScroll = document.getElementById("resolve-tbody").closest(".table-scroll");
+    var advancedToggleLabel = document.querySelector("label.advanced-toggle");
+    var advancedForm = document.getElementById("advanced-form");
+
+    var suggestions = data.suggestions || [];
+
+    if(suggestions.length > 0){
+      // ไม่พบ repo ตรง ๆ — โชว์รายการผลค้นหาแทนตาราง quant
+      infoEl.innerHTML = "";
+      tableScroll.style.display = "none";
+      advancedToggleLabel.style.display = "none";
+      advancedForm.classList.remove("open");
+      advancedForm.style.display = "none";
+
+      renderSuggestions(data);
+      suggestionsBox.style.display = "block";
+      document.getElementById("resolve-result").style.display = "block";
+      return;
+    }
+
+    // เจอ repo ตรง ๆ — โหมดปกติ: โชว์ตาราง quant ตามเดิม
+    suggestionsBox.style.display = "none";
+    suggestionsBox.innerHTML = "";
+    tableScroll.style.display = "";
+    advancedToggleLabel.style.display = "";
+    advancedForm.style.display = "";
+
     var infoParts = [];
     infoParts.push("<span>arch: <b>" + escapeHtml(data.arch || "ไม่ทราบ") + "</b></span>");
     infoParts.push("<span>ctx_train: <b>" + escapeHtml(data.ctx_train || "-") + "</b></span>");
     if(data.gated){
       infoParts.push('<span style="color:var(--orange);">🔒 repo นี้เป็น gated — ถ้าตรวจสอบไม่ผ่าน ให้ใส่ HF token แล้วลองใหม่</span>');
+    }
+    if(data.resolved_repo_id && data.resolved_repo_id !== state.resolveRepoId){
+      infoParts.push('<span style="color:var(--sub);">ใช้ repo: <b>' + escapeHtml(data.resolved_repo_id) + '</b></span>');
     }
     infoEl.innerHTML = infoParts.join("");
 

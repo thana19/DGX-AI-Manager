@@ -172,13 +172,85 @@ def test_resolve_gated_repo_returns_403(client, monkeypatch):
 
 
 def test_resolve_not_found_returns_404(client, monkeypatch):
+    # repo_id ตรงรูปแบบ org/repo แต่ fetch_repo ไม่เจอจริง ⇒ ตกไปค้นหาสำรอง
+    # ถ้าค้นแล้วไม่เจอด้วย (suggestions ว่าง) ต้องตอบ 404 เหมือนเดิม — mock search_models ไว้ด้วย
+    # กัน test นี้ยิงเน็ตจริงตอนตกไปเส้นทางค้นหา
     def fake_fetch_repo(repo_id, *, token=None, client=None):
         raise hf.RepoNotFoundError(f"ไม่พบ repo: {repo_id}")
 
+    def fake_search_models(query, *, limit=12, token=None, client=None):
+        return []
+
     monkeypatch.setattr(hf, "fetch_repo", fake_fetch_repo)
+    monkeypatch.setattr(hf, "search_models", fake_search_models)
 
     resp = client.post("/api/models/resolve", json={"repo_id": "no/such-repo"})
     assert resp.status_code == 404
+
+
+def test_resolve_github_link_returns_suggestions_instead_of_404(client, monkeypatch):
+    """วางลิงก์ GitHub (ไม่ใช่ HF) ลงช่อง repo id → normalize_repo_id คืน repo_id เป็น None
+    ⇒ ต้องตอบ 200 พร้อม suggestions จากการค้นหา ไม่ใช่ 404 (mock search_models กันยิงเน็ตจริง)
+    """
+    fake_hits = [
+        hf.SearchHit(
+            id="openai/gpt-oss-20b", downloads=1000, likes=50,
+            gated=False, is_gguf=False, pipeline_tag="text-generation",
+        ),
+        hf.SearchHit(
+            id="unsloth/gpt-oss-20b-GGUF", downloads=200, likes=10,
+            gated=False, is_gguf=True, pipeline_tag=None,
+        ),
+    ]
+
+    def fake_search_models(query, *, limit=12, token=None, client=None):
+        assert query == "gpt-oss"
+        return fake_hits
+
+    monkeypatch.setattr(hf, "search_models", fake_search_models)
+
+    resp = client.post("/api/models/resolve", json={"repo_id": "https://github.com/openai/gpt-oss"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["repo_id"] == "https://github.com/openai/gpt-oss"
+    assert body["resolved_repo_id"] is None
+    assert body["quants"] == []
+    assert body["query"] == "gpt-oss"
+    assert len(body["suggestions"]) == 2
+    assert body["suggestions"][0]["id"] == "openai/gpt-oss-20b"
+    assert body["suggestions"][1]["is_gguf"] is True
+    assert body["message"]
+
+
+def test_resolve_full_hf_link_with_query_string_resolves_normally(client, monkeypatch):
+    repo_json = _load_fixture("hf_qwen38-27b-gguf_blobs.json")
+
+    def fake_fetch_repo(repo_id, *, token=None, client=None):
+        assert repo_id == "unsloth/Qwen3.8-27B-GGUF"
+        return repo_json
+
+    def fake_fetch_header(url, **kwargs):
+        return gguf.GgufInfo(
+            arch="qwen35", context_length=262144, name="Qwen3.8-27B", size_label="27B",
+            file_type=None, version=3, tensor_count=1, kv_count=1, kv_read=1,
+        ), None
+
+    monkeypatch.setattr(hf, "fetch_repo", fake_fetch_repo)
+    monkeypatch.setattr(gguf, "fetch_header", fake_fetch_header)
+
+    resp = client.post(
+        "/api/models/resolve",
+        json={"repo_id": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF?utm_source=chatgpt.com"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["repo_id"] == "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF?utm_source=chatgpt.com"
+    assert body["resolved_repo_id"] == "unsloth/Qwen3.8-27B-GGUF"
+    assert body["suggestions"] == []
+    assert body["message"] is None
+    assert len(body["quants"]) > 0
 
 
 # ---------------------------------------------------------------------------
