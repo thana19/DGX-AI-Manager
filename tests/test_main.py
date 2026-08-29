@@ -697,3 +697,20 @@ def test_summary_log_ที่ไม่มีอะไรเลย_ไม่พ�
     s = _activate_summary("")
 
     assert s == {"ctx": None, "slots": None, "multimodal": False, "warnings": []}
+
+
+def test_metrics_ส่ง_field_เสริมของ_gauge_ต่อไปครบ(monkeypatch):
+    """dgx-monitor ส่ง sub มาบางตัว (ดิสก์ = 'เหลือ 2.7 TB') — ห้ามกรองทิ้งระหว่างทาง"""
+    import httpx
+    from server import main as m
+
+    payload = {"ok": True, "ts": 1, "gauges": [
+        {"label": "ดิสก์", "value": 31.4, "max": 100, "unit": "%", "warn": 85, "sub": "เหลือ 2.7 TB"},
+    ]}
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload))
+    monkeypatch.setattr(m.httpx, "Client", lambda **kw: httpx.Client(transport=transport, **kw))
+
+    out = m._fetch_metrics()
+
+    assert out["ok"] is True
+    assert out["gauges"][0]["sub"] == "เหลือ 2.7 TB"
