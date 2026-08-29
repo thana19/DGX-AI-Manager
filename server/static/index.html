@@ -6,18 +6,37 @@
 <title>AI Server v2 — Model &amp; Engine Manager</title>
 <style>
   :root{
-    --bg:#0d1117; --card:#161b22; --border:#30363d;
-    --text:#e6edf3; --sub:#8b949e;
-    --accent:#58a6ff; --green:#3fb950; --orange:#d29922; --red:#f85149;
+    /* ธีมของ DGX Spark Monitor — ลอกมาตรง ๆ (server/static ห้ามโหลดของนอกเน็ตเวิร์ก) */
+    --bg: #262833;
+    --panel: #2b2e3b;
+    --line: rgba(255,255,255,0.07);
+    --fg: #eceff4;
+    --dim: #8b90a5;
+    --cyan: #5cc8d8;
+    --gold: #e6c25f;
+    --err: #e06c6c;
+    --ok: #5cc8d8;
+    --warn: #e6c25f;
+
+    /* alias ชื่อตัวแปรเดิมของหน้านี้ → ค่าใหม่ กันไม่ต้องไล่แก้ทุก selector ที่อ้างชื่อเดิม */
+    --card: var(--panel);
+    --border: var(--line);
+    --text: var(--fg);
+    --sub: var(--dim);
+    --accent: var(--cyan);
+    --green: var(--ok);
+    --orange: var(--warn);
+    --red: var(--err);
   }
   *{box-sizing:border-box;}
   body{
     background:var(--bg); color:var(--text);
-    font-family:'Sarabun', system-ui, -apple-system, sans-serif;
+    font-family:'Sarabun', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size:14px;
     margin:0; padding:0 0 80px; line-height:1.6;
   }
   a{color:var(--accent);}
-  .wrap{max-width:1120px; margin:0 auto; padding:0 20px;}
+  .wrap{max-width:980px; margin:0 auto; padding:0 20px;}
 
   /* ===== topbar ===== */
   .topbar{
@@ -54,10 +73,33 @@
   .msg button.close:hover{opacity:1;}
 
   section{margin-bottom:44px;}
-  h2{font-size:1.15rem; color:var(--accent); margin:0 0 6px; display:flex; align-items:center; gap:8px;}
+  h2, h2.section-title, .section-title{
+    font-size:12px; font-weight:600; color:var(--dim);
+    text-transform:uppercase; letter-spacing:0.08em;
+    margin:30px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:8px;
+  }
   .section-hint{color:var(--sub); font-size:0.85rem; margin:0 0 16px;}
 
   .card{background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 18px;}
+
+  /* ===== metric gauges (ลอกจาก DGX Spark Monitor :9100) ===== */
+  .metrics-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px;}
+  .gauge-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 10px 14px; display:flex; flex-direction:column; align-items:center;
+    text-align:center; gap:2px;
+  }
+  .gauge-wrap{position:relative; width:108px; height:108px;}
+  .gauge-svg{width:100%; height:100%; display:block;}
+  .gauge-tick{stroke-linecap:round;}
+  .gauge-center{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;}
+  .gauge-value{font-size:26px; font-weight:300; color:var(--fg); line-height:1;}
+  .gauge-value .unit{font-size:12px; font-weight:400; color:var(--dim); margin-left:2px;}
+  .gauge-label{margin-top:8px; font-size:12.5px; color:var(--fg); display:flex; align-items:center; gap:5px;}
+  .gauge-label .metric-icon{font-size:12px; opacity:0.85;}
+  .gauge-cap{font-size:11px; color:var(--dim);}
+  .metrics-offline{color:var(--dim); font-size:0.82rem; padding:14px; text-align:center; opacity:0.8;}
 
   button{
     font-family:inherit; cursor:pointer; border-radius:6px; border:1px solid var(--border);
@@ -66,9 +108,9 @@
   }
   button:hover:not(:disabled){border-color:var(--accent);}
   button:disabled{opacity:0.45; cursor:not-allowed;}
-  button.primary{background:rgba(88,166,255,0.12); border-color:var(--accent); color:var(--accent);}
-  button.danger{background:rgba(248,81,73,0.10); border-color:var(--red); color:var(--red);}
-  button.warn{background:rgba(210,153,34,0.10); border-color:var(--orange); color:var(--orange);}
+  button.primary{background:rgba(92,200,216,0.12); border-color:var(--accent); color:var(--accent);}
+  button.danger{background:rgba(224,108,108,0.10); border-color:var(--red); color:var(--red);}
+  button.warn{background:rgba(230,194,95,0.10); border-color:var(--orange); color:var(--orange);}
   button.small{padding:4px 9px; font-size:0.78rem;}
 
   input[type=text], input[type=number], input[type=password], select, textarea{
@@ -83,10 +125,10 @@
     display:inline-flex; align-items:center; gap:4px; border-radius:20px; padding:2px 9px;
     font-size:0.76rem; font-weight:600; border:1px solid transparent; white-space:nowrap;
   }
-  .badge-ok{background:rgba(63,185,80,0.12); color:var(--green); border-color:var(--green);}
-  .badge-warn{background:rgba(210,153,34,0.12); color:var(--orange); border-color:var(--orange);}
-  .badge-bad{background:rgba(248,81,73,0.12); color:var(--red); border-color:var(--red);}
-  .badge-muted{background:rgba(139,148,158,0.12); color:var(--sub); border-color:var(--border);}
+  .badge-ok{background:rgba(92,200,216,0.12); color:var(--green); border-color:var(--green);}
+  .badge-warn{background:rgba(230,194,95,0.12); color:var(--orange); border-color:var(--orange);}
+  .badge-bad{background:rgba(224,108,108,0.12); color:var(--red); border-color:var(--red);}
+  .badge-muted{background:rgba(139,144,165,0.12); color:var(--sub); border-color:var(--border);}
 
   /* ===== instances ===== */
   #instances-list{display:flex; flex-direction:column; gap:10px;}
@@ -198,6 +240,12 @@
 <div class="wrap">
 
   <div id="msgbar"></div>
+
+  <section id="metrics-section">
+    <h2 class="section-title">ค่าสด</h2>
+    <div class="metrics-grid" id="metrics-grid"></div>
+    <div id="metrics-offline" class="metrics-offline" style="display:none;"></div>
+  </section>
 
   <section>
     <h2>🧠 โมเดลที่โหลดอยู่</h2>
@@ -378,6 +426,132 @@
     resolveRepoId: "",
     downloadsTimer: null
   };
+
+  /* ===================== METRICS (gauge 6 ตัวบนสุด) ===================== */
+  /* ลอกลอจิกวาด gauge มาจาก DGX Spark Monitor (:9100) — ข้อมูลมาจาก /api/metrics
+     ของเราเอง ซึ่ง proxy ไป DGX Monitor อีกที เพราะฝั่งนั้นไม่เปิด CORS */
+
+  var GAUGE_TOTAL_TICKS = 40;
+  var GAUGE_COLOR = { ok: "#5cc8d8", warn: "#e6c25f", err: "#e06c6c" };
+  var GAUGE_TICK_OFF = "rgba(255,255,255,0.12)";
+  var GAUGE_TICK_FAINT = "rgba(92,200,216,0.35)";
+  var GAUGE_ICONS = {
+    "GPU อุณหภูมิ": "🌡", "GPU กำลังไฟ": "⚡", "GPU ใช้งาน": "📈",
+    "RAM": "🧠", "CPU load": "💻", "ดิสก์": "💾"
+  };
+
+  function gaugeStatus(value, max, warn){
+    if(max && value >= max * 0.98) return "err";
+    if(warn !== undefined && warn !== null && value >= warn) return "warn";
+    return "ok";
+  }
+
+  function gaugeStatusColor(status){
+    return GAUGE_COLOR[status] || GAUGE_COLOR.ok;
+  }
+
+  function svgEl(tag, attrs){
+    var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for(var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // ปัดทศนิยม 1 ตำแหน่ง ยกเว้นหน่วย % และ °C ปัดเป็นจำนวนเต็ม
+  function fmtGaugeValue(v, unit){
+    if(v === null || v === undefined || isNaN(v)) return "-";
+    var n = Number(v);
+    if(unit === "%" || unit === "°C") return String(Math.round(n));
+    var r = Math.round(n * 10) / 10;
+    return (r % 1 === 0) ? String(r) : r.toFixed(1);
+  }
+
+  function renderGaugeSvg(value, max, status){
+    var svg = svgEl("svg", {viewBox: "0 0 120 120", "class": "gauge-svg"});
+    var fraction = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
+    var litCount = value > 0 ? Math.max(1, Math.round(fraction * GAUGE_TOTAL_TICKS)) : 0;
+    var color = gaugeStatusColor(status);
+    var cx = 60, cy = 60, rOuter = 54, rInner = 42;
+
+    for(var i = 0; i < GAUGE_TOTAL_TICKS; i++){
+      var angle = (i * (360 / GAUGE_TOTAL_TICKS) - 90) * (Math.PI / 180);
+      var x1 = cx + rInner * Math.cos(angle);
+      var y1 = cy + rInner * Math.sin(angle);
+      var x2 = cx + rOuter * Math.cos(angle);
+      var y2 = cy + rOuter * Math.sin(angle);
+      var line = svgEl("line", {
+        x1: x1.toFixed(2), y1: y1.toFixed(2), x2: x2.toFixed(2), y2: y2.toFixed(2),
+        "class": "gauge-tick", "stroke-width": "3"
+      });
+      if(i < litCount){
+        line.setAttribute("stroke", color);
+        line.setAttribute("opacity", "1");
+      }else if(litCount === 0 && i === 0){
+        line.setAttribute("stroke", GAUGE_TICK_FAINT);
+        line.setAttribute("opacity", "1");
+      }else{
+        line.setAttribute("stroke", GAUGE_TICK_OFF);
+      }
+      svg.appendChild(line);
+    }
+    return svg;
+  }
+
+  function renderGauges(gauges){
+    var grid = document.getElementById("metrics-grid");
+    grid.innerHTML = "";
+    gauges.forEach(function(g){
+      var value = Number(g.value);
+      var max = Number(g.max);
+      var status = gaugeStatus(value, max, g.warn);
+
+      var card = document.createElement("div");
+      card.className = "gauge-card";
+
+      var wrap = document.createElement("div");
+      wrap.className = "gauge-wrap";
+      wrap.appendChild(renderGaugeSvg(value, max, status));
+
+      var center = document.createElement("div");
+      center.className = "gauge-center";
+      center.innerHTML = '<div class="gauge-value">' + fmtGaugeValue(value, g.unit) +
+        '<span class="unit">' + escapeHtml(g.unit || "") + '</span></div>';
+      wrap.appendChild(center);
+      card.appendChild(wrap);
+
+      var label = document.createElement("div");
+      label.className = "gauge-label";
+      label.innerHTML = '<span class="metric-icon">' + (GAUGE_ICONS[g.label] || "") + '</span>' + escapeHtml(g.label || "");
+      card.appendChild(label);
+
+      var cap = document.createElement("div");
+      cap.className = "gauge-cap";
+      cap.textContent = "/ " + fmtGaugeValue(max, g.unit) + " " + (g.unit || "");
+      card.appendChild(cap);
+
+      grid.appendChild(card);
+    });
+  }
+
+  function renderMetricsOffline(detail){
+    document.getElementById("metrics-grid").innerHTML = "";
+    var el = document.getElementById("metrics-offline");
+    el.style.display = "block";
+    el.textContent = detail || "ดึงข้อมูล gauge ไม่ได้";
+  }
+
+  async function loadMetrics(){
+    try{
+      var data = await apiFetch("/api/metrics");
+      if(!data.ok){
+        renderMetricsOffline(data.detail);
+        return;
+      }
+      document.getElementById("metrics-offline").style.display = "none";
+      renderGauges(data.gauges || []);
+    }catch(e){
+      renderMetricsOffline(e.message);
+    }
+  }
 
   /* ===================== TOPBAR ===================== */
 
@@ -1096,6 +1270,8 @@
     await loadModels();
     await loadInstances();
     setInterval(loadInstances, 10000);
+    await loadMetrics();
+    setInterval(loadMetrics, 10000);
     await pollDownloads();
   }
 

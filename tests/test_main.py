@@ -70,6 +70,98 @@ def test_health(client):
 
 
 # ---------------------------------------------------------------------------
+# /api/metrics — proxy ไปหา DGX Spark Monitor (:9100 ไม่เปิด CORS)
+# ---------------------------------------------------------------------------
+
+
+def _patch_metrics_client(monkeypatch, handler):
+    """แทนที่ httpx.Client() ที่ main._fetch_metrics() สร้างเอง (ไม่มี client ส่งเข้ามา ตอนเรียกผ่าน route จริง)
+    ด้วยตัวที่ผูก MockTransport ไว้ — กันยิงเน็ตจริงไป :9100
+    """
+    real_client_cls = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        return real_client_cls(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(main.httpx, "Client", fake_client)
+
+
+def test_metrics_ok(client, monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={
+            "ok": True, "ts": 1787981764,
+            "gauges": [
+                {"label": "GPU อุณหภูมิ", "value": 55.3, "max": 90, "unit": "°C", "warn": 75},
+                {"label": "RAM", "value": 42.1, "max": 121.7, "unit": "GB", "warn": 109.53},
+            ],
+            "services": {}, "model": None, "stale": False,
+        })
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["ts"] == 1787981764
+    assert len(body["gauges"]) == 2
+    assert body["gauges"][0]["label"] == "GPU อุณหภูมิ"
+    assert body["gauges"][1]["unit"] == "GB"
+
+
+def test_metrics_connect_error_returns_ok_false_ไม่_raise(client, monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["gauges"] == []
+    assert "9100" in body["detail"]
+
+
+def test_metrics_ตอบ_json_เพี้ยน_returns_ok_false(client, monkeypatch):
+    def handler(request):
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["gauges"] == []
+
+
+def test_metrics_ตอบ_json_แต่ไม่ใช่_object_returns_ok_false(client, monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json=[1, 2, 3])
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["gauges"] == []
+
+
+def test_metrics_timeout_returns_ok_false(client, monkeypatch):
+    def handler(request):
+        raise httpx.TimeoutException("timed out", request=request)
+
+    _patch_metrics_client(monkeypatch, handler)
+
+    resp = client.get("/api/metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+
+
+# ---------------------------------------------------------------------------
 # /api/models
 # ---------------------------------------------------------------------------
 

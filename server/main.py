@@ -12,6 +12,7 @@ import shlex
 import subprocess
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +22,10 @@ from . import catalog, downloads, engines, gguf, hf, instances, paths, software
 
 APP_VERSION = "2.0.0-phase1"
 DEFAULT_PORT = int(os.environ.get("AISERVER2_PORT", "9001"))
+
+# DGX Spark Monitor — แดชบอร์ด/agent แยกต่างหากที่รันบนพอร์ตนี้ ไม่เปิด CORS
+# ⇒ หน้าเว็บ v2 เรียกตรงไม่ได้ ต้อง proxy ผ่าน /api/metrics (ดู task ส่วนที่ 1)
+_DGX_MONITOR_URL = os.environ.get("DGX_MONITOR_URL", "http://127.0.0.1:9100")
 
 # LLM หลักเสิร์ฟบน :8000 เสมอ — กติกาเหล็กจาก CONTEXT.md (thClaws และ client ในเครื่องผูกพอร์ตนี้)
 _MAIN_LLM_PORT = 8000
@@ -127,6 +132,42 @@ def health() -> dict[str, Any]:
         "ram_total_gb": software.mem_total_gb(),
         "disk_free_gb": software.disk_free_gb(os.path.expanduser("~")),
     }
+
+
+# ---------------------------------------------------------------------------
+# /api/metrics — proxy ไปหา DGX Spark Monitor (:9100) เพราะฝั่งนั้นไม่เปิด CORS
+# ---------------------------------------------------------------------------
+
+_METRICS_UNREACHABLE_DETAIL = "เชื่อมต่อ DGX Monitor (:9100) ไม่ได้"
+
+
+def _fetch_metrics(client: httpx.Client | None = None) -> dict[str, Any]:
+    own_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        resp = http_client.get(f"{_DGX_MONITOR_URL}/api/now", timeout=5.0)
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        # ต่อไม่ได้ / ตอบไม่ใช่ JSON / ช้าเกิน — gauge เป็นของประดับ ห้ามทำให้หน้าหลักพัง
+        return {"ok": False, "gauges": [], "detail": _METRICS_UNREACHABLE_DETAIL}
+    finally:
+        if own_client:
+            http_client.close()
+
+    if not isinstance(data, dict):
+        return {"ok": False, "gauges": [], "detail": _METRICS_UNREACHABLE_DETAIL}
+
+    gauges = data.get("gauges")
+    if not isinstance(gauges, list):
+        gauges = []
+
+    return {"ok": True, "ts": data.get("ts"), "gauges": gauges}
+
+
+@app.get("/api/metrics")
+def get_metrics() -> dict[str, Any]:
+    return _fetch_metrics()
 
 
 # ---------------------------------------------------------------------------
