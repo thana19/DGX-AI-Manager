@@ -699,18 +699,17 @@ def test_summary_log_ที่ไม่มีอะไรเลย_ไม่พ�
     assert s == {"ctx": None, "slots": None, "multimodal": False, "warnings": []}
 
 
-def test_metrics_ส่ง_field_เสริมของ_gauge_ต่อไปครบ(monkeypatch):
+def test_metrics_ส่ง_field_เสริมของ_gauge_ต่อไปครบ(client, monkeypatch):
     """dgx-monitor ส่ง sub มาบางตัว (ดิสก์ = 'เหลือ 2.7 TB') — ห้ามกรองทิ้งระหว่างทาง"""
-    import httpx
-    from server import main as m
+    def handler(request):
+        return httpx.Response(200, json={"ok": True, "ts": 1, "gauges": [
+            {"label": "ดิสก์", "value": 31.4, "max": 100, "unit": "%", "warn": 85,
+             "sub": "เหลือ 2.7 TB"},
+        ]})
 
-    payload = {"ok": True, "ts": 1, "gauges": [
-        {"label": "ดิสก์", "value": 31.4, "max": 100, "unit": "%", "warn": 85, "sub": "เหลือ 2.7 TB"},
-    ]}
-    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload))
-    monkeypatch.setattr(m.httpx, "Client", lambda **kw: httpx.Client(transport=transport, **kw))
+    _patch_metrics_client(monkeypatch, handler)
 
-    out = m._fetch_metrics()
+    body = client.get("/api/metrics").json()
 
-    assert out["ok"] is True
-    assert out["gauges"][0]["sub"] == "เหลือ 2.7 TB"
+    assert body["ok"] is True
+    assert body["gauges"][0]["sub"] == "เหลือ 2.7 TB"
