@@ -565,3 +565,43 @@ def test_has_draft_ไม่จับ_flag_อื่นที่ขึ้นต�
     assert not _has_draft("--mmproj ~/x.gguf")
     assert not _has_draft("--model-draft-something ~/x.gguf")
     assert _has_draft("-md ~/x.gguf")
+
+
+# --- log ดิบดูเหมือน error ทั้งที่โหลดสำเร็จ (เจอจริง 2026-08-29) ---------------
+
+
+_REAL_LOG = """0.01.019.478 W model has unused tensor blk.64.attn_output.weight (size = 33423360 bytes) -- ignoring
+0.01.019.480 W model has unused tensor blk.64.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.05.685.637 W load_hparams: Qwen-VL models require at minimum 1024 image tokens to function correctly
+0.05.851.919 I srv    load_model: loaded multimodal model, '/home/dgx/models/gguf/x/mmproj.gguf'
+0.06.182.911 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 262144, kv_unified = 'true'
+0.06.185.885 I srv  llama_server: model loaded
+0.06.185.888 I srv  llama_server: listening on http://0.0.0.0:8001"""
+
+
+def test_summary_ดึงค่าที่ผู้ใช้ต้องรู้จาก_log_จริง():
+    from server.main import _activate_summary
+
+    s = _activate_summary(_REAL_LOG)
+
+    assert s["ctx"] == 262144
+    assert s["slots"] == 4
+    assert s["multimodal"] is True
+
+
+def test_summary_ทิ้ง_unused_tensor_แต่เก็บ_warning_ที่สำคัญ():
+    """unused tensor = MTP layer ที่ engine ไม่ได้ใช้ · เตือนสิบกว่าบรรทัดจนดูเหมือนพัง"""
+    from server.main import _activate_summary
+
+    warnings = _activate_summary(_REAL_LOG)["warnings"]
+
+    assert not any("unused tensor" in w for w in warnings)
+    assert any("image tokens" in w for w in warnings), "warning ที่มีประโยชน์ต้องไม่ถูกทิ้ง"
+
+
+def test_summary_log_ที่ไม่มีอะไรเลย_ไม่พัง():
+    from server.main import _activate_summary
+
+    s = _activate_summary("")
+
+    assert s == {"ctx": None, "slots": None, "multimodal": False, "warnings": []}

@@ -688,10 +688,26 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({id: id, port: port, ctx: ctx, allow_main_port: false})
       });
-      showMsg("โหลดขึ้นแรมสำเร็จ บนพอร์ต " + res.port, "ok");
-      if(logEl && res.log){
+      var sum = res.summary || {};
+      var bits = ["โหลดขึ้นแรมสำเร็จ บนพอร์ต " + res.port];
+      if(sum.ctx) bits.push("ctx " + fmtInt(sum.ctx));
+      if(sum.slots) bits.push(sum.slots + " slot");
+      if(sum.multimodal) bits.push("อ่านภาพได้");
+      showMsg(bits.join(" · "), "ok");
+      if(logEl){
+        // log ดิบมี warning ที่ไม่สำคัญเป็นสิบบรรทัด (unused tensor) — ซ่อนไว้ ไม่งั้นดูเหมือนพัง
+        var html = "";
+        if(res.warning) html += '<div style="color:var(--orange);margin-bottom:8px">⚠️ ' + escapeHtml(res.warning) + '</div>';
+        (sum.warnings || []).forEach(function(w){
+          html += '<div style="color:var(--sub);margin-bottom:4px">• ' + escapeHtml(w) + '</div>';
+        });
+        if(res.log){
+          html += '<details><summary style="cursor:pointer;color:var(--accent)">ดู log ดิบ</summary>' +
+                  '<pre style="white-space:pre-wrap;word-break:break-all;margin-top:8px;font-size:12px">' +
+                  escapeHtml(res.log) + '</pre></details>';
+        }
         logEl.style.display = "block";
-        logEl.textContent = res.log;
+        logEl.innerHTML = html;
       }
     }catch(e){
       showMsg(e.message, "error");

@@ -486,6 +486,30 @@ def _strip_draft(args: str) -> str:
     return " ".join(out.split())
 
 
+# warning ที่ไม่ต้องเอาไปกวนผู้ใช้ — โมเดลที่มี MTP layer ฝังในไฟล์ (blk.NN.nextn.*)
+# ทำให้ llama.cpp เตือน "unused tensor" สิบกว่าบรรทัดรวด ผู้ใช้เห็นแล้วนึกว่าพัง ทั้งที่โหลดสำเร็จ
+_NOISE_WARNINGS = ("unused tensor",)
+
+
+def _activate_summary(log_text: str) -> dict[str, Any]:
+    """สรุปผลโหลดจาก log ให้อ่านรู้เรื่อง — แยก 'สิ่งที่ควรรู้' ออกจาก log ดิบ"""
+    ctx = re.search(r"n_ctx_slot\s*=\s*(\d+)", log_text)
+    slots = re.search(r"n_slots\s*=\s*(\d+)", log_text)
+    warnings = []
+    for line in log_text.splitlines():
+        if re.search(r"\bW\s", line) and not any(n in line for n in _NOISE_WARNINGS):
+            # ตัด timestamp/ระดับ log ออก เหลือแต่ข้อความ
+            msg = re.sub(r"^\S*\s*W\s+", "", line).strip()
+            if msg and msg not in warnings:
+                warnings.append(msg)
+    return {
+        "ctx": int(ctx.group(1)) if ctx else None,
+        "slots": int(slots.group(1)) if slots else None,
+        "multimodal": "loaded multimodal model" in log_text,
+        "warnings": warnings[:5],
+    }
+
+
 @app.post("/api/activate")
 def activate(req: ActivateReq) -> dict[str, Any]:
     if req.port == _MAIN_LLM_PORT and not req.allow_main_port:
@@ -587,7 +611,7 @@ def activate(req: ActivateReq) -> dict[str, Any]:
             detail=f"โหลด {entry.id} ขึ้นแรมไม่สำเร็จ (พอร์ต {req.port}): {log_tail[-500:] or proc_output[-500:] or 'ไม่มี log'}",
         )
 
-    result = {"ok": True, "port": req.port, "log": log_tail}
+    result = {"ok": True, "port": req.port, "log": log_tail, "summary": _activate_summary(log_tail)}
     if dropped_draft:
         result["warning"] = (
             "โหลดสำเร็จ แต่ถอด draft model (-md) ออก เพราะ engine รุ่นนี้โหลดมันไม่ได้ "
