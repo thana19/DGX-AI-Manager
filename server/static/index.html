@@ -321,8 +321,15 @@
           <textarea id="pg-input" rows="3" placeholder="พิมพ์ข้อความ… (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)"></textarea>
         </div>
         <div class="pg-controls">
-          <div class="field" style="width:110px;"><label for="pg-max-tokens">max_tokens</label><input type="number" id="pg-max-tokens" value="512"></div>
+          <div class="field" style="width:110px;"><label for="pg-max-tokens">max_tokens</label><input type="number" id="pg-max-tokens" value="2048"></div>
           <div class="field" style="width:100px;"><label for="pg-temperature">temperature</label><input type="number" id="pg-temperature" value="0.7" step="0.1"></div>
+          <div class="field" style="width:auto;">
+            <label for="pg-thinking">โหมดคิด</label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:var(--dim);cursor:pointer;padding-top:5px;">
+              <input type="checkbox" id="pg-thinking" checked>
+              <span id="pg-thinking-label">🧠 เปิด</span>
+            </label>
+          </div>
           <input type="file" id="pg-image-input" accept="image/*" style="display:none;">
           <button type="button" class="small" id="pg-attach-btn">📎 แนบรูป</button>
           <button type="button" class="small" id="pg-clear-btn">🗑 ล้าง</button>
@@ -1704,6 +1711,7 @@
     var maxTokens = parseInt(document.getElementById("pg-max-tokens").value, 10);
     if(!maxTokens || maxTokens <= 0) maxTokens = 512;
     var temperature = parseFloat(document.getElementById("pg-temperature").value);
+    var thinkingOn = document.getElementById("pg-thinking").checked;
     if(isNaN(temperature)) temperature = 0.7;
 
     var assistantMsg = {content: "", reasoning: "", error: null};
@@ -1725,7 +1733,10 @@
           messages: pg.messages.map(function(m){ return {role: m.role, content: m.content}; }),
           max_tokens: maxTokens,
           temperature: temperature,
-          stream: true
+          stream: true,
+          // ปิดโหมดคิด = ประหยัด token มหาศาล (วัดจริง: 106 → 4 token สำหรับคำถามเดียวกัน)
+          // ทดสอบแล้วได้ผลทั้งต่อตรงที่ engine และผ่าน gateway :4000
+          ...(thinkingOn ? {} : {chat_template_kwargs: {enable_thinking: false}})
         }),
         signal: pg.controller.signal
       });
@@ -1784,7 +1795,7 @@
       showMsg(hardError + " (ข้อความที่ได้มาก่อนหน้ายังอยู่)", "error");
     }
     if(!hardError && !aborted && gotAnyReasoning && !gotAnyContent){
-      showMsg("คิดจนหมด token — ลองเพิ่ม max_tokens", "error");
+      showMsg("คิดจนหมด token ยังไม่ทันตอบ — เพิ่ม max_tokens หรือปิด 🧠 โหมดคิด", "error");
     }
 
     pg.messages.push({role: "assistant", content: assistantMsg.content});
@@ -1793,6 +1804,11 @@
     statsEl.textContent = tokenCount + " token · " + elapsed.toFixed(1) + " วิ · " + tps + " tok/s";
   }
 
+  // ป้ายบอกสถานะโหมดคิด — ให้เห็นชัดโดยไม่ต้องเพ่งที่ checkbox
+  document.getElementById("pg-thinking").addEventListener("change", function(e){
+    document.getElementById("pg-thinking-label").textContent =
+      e.target.checked ? "🧠 เปิด" : "⚡ ปิด (เร็วกว่า)";
+  });
   document.getElementById("pg-send-btn").addEventListener("click", pgSend);
   document.getElementById("pg-input").addEventListener("keydown", function(e){
     if(e.key === "Enter" && !e.shiftKey){
