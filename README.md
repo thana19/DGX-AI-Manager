@@ -1,32 +1,45 @@
-# AI Server v2
+# DGX AI Manager
 
-เขียนใหม่แทน AI Server hub เดิม (v0.2.88 · `:9000`) — ส่งมอบเป็นเฟส
+เว็บจัดการโมเดล LLM และ engine บน DGX Spark (GB10) — เปิดหน้าเดียวจบ: ดาวน์โหลดโมเดล จัดคลัง โหลดขึ้นแรม และลองคุยได้ทันที
 
-- **เฟส 1 — Model & Engine Manager** (กำลังทำ) · รันที่ `:9001` คู่กับ hub เดิม
-- อ่านก่อนเริ่ม: [`CONTEXT.md`](CONTEXT.md) · [PRD เฟส 1](docs/prd/model-engine-manager.md) · [ADR 0001](docs/adr/0001-registry-split.md)
-- สรุปแผนแบบหน้าเว็บ: [`html-plan/model-engine-manager-2026-08-28_2330.html`](html-plan/model-engine-manager-2026-08-28_2330.html)
+## ฟีเจอร์
 
-## โครงสร้าง
+### 🎛️ แดชบอร์ดสถานะเครื่อง
+- Gauge 6 ตัวแถวบนสุด (CPU · RAM · GPU ฯลฯ) อัปเดตสด ธีมเดียวกับ DGX Spark Monitor
 
-```
-server/      FastAPI app (catalog · hf · gguf · engines · downloads · software · instances)
-engines/     bash เดิมจาก v1 ที่ผ่านสนามจริงบน GB10 แล้ว — reuse ทั้งดุ้น
-tests/       pytest + fixture จาก response จริงของ HF (ไม่ยิงเน็ตตอน test)
-docs/        PRD · ADR · ไฟล์อ้างอิงจาก v1 (*.v1-reference)
-```
+### 🧠 โมเดลที่โหลดอยู่
+- เห็น instance ที่รันจริงทุกพอร์ต พร้อมปุ่มหยุดจากหน้าเว็บ
+- ตรวจจับ speculative decoding (FastMTP) และกู้อัตโนมัติเมื่อ draft model โหลดไม่ขึ้น
 
-## รัน (dev บน Mac)
+### 💬 Playground ลองคุย
+- คุยกับโมเดลที่รันอยู่ได้ทันทีจากหน้าเดียวกัน สตรีมคำตอบแบบเรียลไทม์
+- กล่อง "กำลังคิด" แยกพับเก็บได้ · มีสวิตช์ปิดโหมดคิดเพื่อให้ตอบเร็วขึ้น
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/pytest
-.venv/bin/uvicorn server.main:app --port 9001
-```
+### 📚 คลังโมเดล
+- รวมโมเดลจาก catalog ของระบบและโมเดลที่ผู้ใช้เพิ่มเองไว้ในที่เดียว
+- เห็นขนาดไฟล์และสถานะพร้อมใช้ · สั่งดาวน์โหลดหรือโหลดขึ้นแรมได้จากการ์ดเดียว
 
-## deploy ขึ้น DGX
+### ➕ เพิ่มโมเดลจาก Hugging Face
+- วางลิงก์ HF รูปแบบไหนก็ได้ ระบบค้นหาและ resolve repo ให้เอง
+- เลือก quant ได้พร้อมเห็นขนาดไฟล์จริงก่อนตัดสินใจโหลด
+- อ่านสถาปัตยกรรมโมเดลจาก GGUF header ด้วย HTTP Range request — รู้ก่อนโหลดว่า engine รันได้ไหม โดยไม่ต้องดาวน์โหลดทั้งไฟล์
+- เช็คความเข้ากันกับ engine จากไฟล์ engine ที่ติดตั้งจริง ไม่พึ่งตารางที่จดมือ
 
-```bash
-bash deploy.sh        # rsync → dgx:~/aiserver2 แล้ว restart :9001
-```
+### ⬇ ตัวจัดการดาวน์โหลด
+- คิวดาวน์โหลดผ่าน aria2 — progress ความเร็ว และ ETA รายไฟล์
+- หยุดชั่วคราว / ทำต่อ / ยกเลิก ได้ระหว่างโหลด
+- แท็บแยก **กำลังดำเนินการ / สำเร็จ** — งานที่เสร็จแล้วย้ายแท็บอัตโนมัติ และการ์ดในคลังโมเดลพร้อมให้โหลดขึ้นแรมทันที
 
-**ห้ามแตะ** `:9000` (hub เดิม = ทางถอย) และ instance ที่รันอยู่บน `:8000`
+### 🔌 วิธีใช้ในตัว
+- Modal รวมตัวอย่างการเรียก API สำหรับต่อกับ client ภายนอก
+
+## Engine ที่รองรับ
+
+- **llama.cpp** (llama-server) — GGUF ทุก quant
+- **vLLM** (docker) — NVFP4 พร้อม tool calling
+
+## เบื้องหลัง
+
+- Backend: Python 3.12 · FastAPI + uvicorn
+- Frontend: HTML/JS ไฟล์เดียว ไม่มี build step
+- Test 253 ตัว รันได้โดยไม่ต้องต่อเน็ต (fixture จาก response จริง)
