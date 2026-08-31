@@ -1,6 +1,6 @@
 # plan.md — AI Server v2
 
-อัปเดต: 2026-08-29 01:05
+อัปเดต: 2026-08-31 09:24
 
 ## เป้าหมายรวม
 
@@ -11,6 +11,7 @@
 | เฟส | ขอบเขต | สถานะ |
 |---|---|---|
 | 1 | Model & Engine Manager (:9001) | ✅ เสร็จ 2026-08-29 |
+| 1.5 | ส่วนเสริมหลังใช้งานจริง (ค้นหา HF · ปุ่มหยุด · ธีม+gauge · วิธีใช้+playground) | ✅ เสร็จ 2026-08-31 |
 | 2 | gauges/health dashboard · service start/stop · studio packs | ⏳ |
 | 3 | LiteLLM sync · cloud BYOK · per-instance settings · discovery + API keys | ⏳ |
 | 4 | ระบบ self-update/license + release pipeline แล้วสลับพอร์ตเป็น :9000 แทน hub เดิม | ⏳ |
@@ -31,7 +32,8 @@
 
 ## สิ่งที่รู้แล้วว่าต้องทำในเฟสถัดไป
 
-- ยังไม่มี endpoint หยุด instance (`/api/instances/{port}/stop`) — เฟส 1 บอกได้แค่ว่าต้องหยุดอะไร แต่หยุดให้ไม่ได้
 - `POST /api/engines/upgrade` เขียนโค้ดครบแล้วแต่ยังไม่ได้ทดสอบกับ pack จริง (เครื่องนี้ build 10696 ใหม่พอ ไม่มีเหตุให้อัป)
 - `read_supported_archs` คืน 2341 token ซึ่งเป็น superset ของ arch จริง — false OK เป็นไปได้ (จะตกไปใช้กลไกเรียนจาก log) ถ้าอยากแม่นกว่านี้ต้องหาวิธีดึงเฉพาะตาราง arch
 - ds4 ยังไม่มี `engines/ds4.sh` ในโปรเจกต์
+- หน้าเว็บไม่บอกเพดาน `ctx` ข้างช่อง `max_tokens` — ตั้งเกินแล้วไม่รู้ตัว (พี่หนุ่มถามค้างไว้)
+- สวิตช์ปิดโหมดคิดมีผลเฉพาะใน playground — ถ้าอยากให้ client ข้างนอกได้ด้วยต้องตั้งที่ LiteLLM

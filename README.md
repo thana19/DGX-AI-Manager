@@ -9,7 +9,7 @@
 ## โครงสร้าง
 
 ```
-server/      FastAPI app (catalog · hf · gguf · engines · downloads · software)
+server/      FastAPI app (catalog · hf · gguf · engines · downloads · software · instances)
 engines/     bash เดิมจาก v1 ที่ผ่านสนามจริงบน GB10 แล้ว — reuse ทั้งดุ้น
 tests/       pytest + fixture จาก response จริงของ HF (ไม่ยิงเน็ตตอน test)
 docs/        PRD · ADR · ไฟล์อ้างอิงจาก v1 (*.v1-reference)
