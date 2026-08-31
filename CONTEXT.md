@@ -31,7 +31,7 @@ v2 = เขียนใหม่ทั้งตัวเพื่อแทน hu
 
 ## ข้อเท็จจริงของเครื่อง (verify แล้ว 2026-08-28)
 
-- DGX Spark GB10 · host `gx10-6214` · ssh alias `dgx` (Tailscale `(redacted)`)
+- DGX Spark GB10 · host `gx10-6214` · ssh alias `dgx` (เข้าถึงผ่าน Tailscale)
 - แรม unified 128GB (ใช้ได้จริง ~121.7GB) — GPU กับ CPU ใช้ก้อนเดียวกัน ⇒ LLM กับ ComfyUI แย่งกัน
 - โมเดลอยู่ที่ `~/models/` (gguf/ และ nvfp4/) · llama.cpp ที่ `~/llama.cpp/build/bin/`
 - llama-server ปัจจุบัน: **build 10696** (`version: 0.3.0-dev (build 10696, commit 1f0a36a35)`) · vLLM image `aiserver-vllm:26.07`

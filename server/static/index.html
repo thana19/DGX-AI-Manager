@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Server v2 — Model &amp; Engine Manager</title>
+<title>DGX AI Manager — Model &amp; Engine Manager</title>
 <style>
   :root{
     /* ธีมของ DGX Spark Monitor — ลอกมาตรง ๆ (server/static ห้ามโหลดของนอกเน็ตเวิร์ก) */
@@ -242,12 +242,12 @@
   .modal-head h3{margin:0; font-size:1rem; color:var(--text);}
   .modal-close{background:none; border:none; color:var(--sub); font-size:1.3rem; cursor:pointer; padding:0 4px; line-height:1;}
   .modal-close:hover{color:var(--text);}
-  .modal-tabs{display:flex; flex-wrap:wrap; gap:4px; border-bottom:1px solid var(--line); margin:14px 0 12px;}
-  .modal-tab-btn{
+  .modal-tabs, .tabs{display:flex; flex-wrap:wrap; gap:4px; border-bottom:1px solid var(--line); margin:14px 0 12px;}
+  .modal-tab-btn, .tab-btn{
     background:none; border:none; border-bottom:2px solid transparent; border-radius:0;
     color:var(--sub); padding:6px 10px; font-size:0.85rem;
   }
-  .modal-tab-btn.active{color:var(--accent); border-bottom-color:var(--accent);}
+  .modal-tab-btn.active, .tab-btn.active{color:var(--accent); border-bottom-color:var(--accent);}
   .modal-tab-panel{display:none;}
   .modal-tab-panel.active{display:block;}
   .code-block-wrap{position:relative;}
@@ -281,7 +281,7 @@
 
 <div class="topbar">
   <div class="wrap topbar-row">
-    <h1>🖥️ AI Server v2 — Model &amp; Engine Manager</h1>
+    <h1>🖥️ DGX AI Manager — Model &amp; Engine Manager</h1>
     <div class="topbar-stats" id="health-stats">กำลังโหลดสถานะเครื่อง…</div>
     <div class="engines-list" id="engines-list">กำลังโหลด engine…</div>
   </div>
@@ -408,6 +408,10 @@
   <section>
     <h2>⬇ ดาวน์โหลด</h2>
     <p class="section-hint">งานดาวน์โหลดที่กำลังทำงานหรือทำล่าสุด</p>
+    <div class="tabs" id="downloads-tabs">
+      <button type="button" class="tab-btn active" data-dltab="active">กำลังดำเนินการ</button>
+      <button type="button" class="tab-btn" data-dltab="done">สำเร็จ</button>
+    </div>
     <div id="downloads-list"></div>
     <div id="downloads-status" class="empty-state" style="display:none;"></div>
   </section>
@@ -520,7 +524,9 @@
     instances: [],
     resolveResult: null,
     resolveRepoId: "",
-    downloadsTimer: null
+    downloadsTimer: null,
+    downloadTab: "active",
+    lastJobs: []
   };
 
   /* ===================== METRICS (gauge 6 ตัวบนสุด) ===================== */
@@ -1464,21 +1470,55 @@
     );
   }
 
+  var DOWNLOAD_TAB_EMPTY = {
+    active: "ไม่มีงานที่กำลังดาวน์โหลด",
+    done: "ยังไม่มีงานที่สำเร็จ"
+  };
+
   function renderDownloads(jobs){
+    state.lastJobs = jobs || [];
+
+    var unfinished = state.lastJobs.filter(function(j){ return j.state !== "done"; });
+    var finished = state.lastJobs.filter(function(j){ return j.state === "done"; }).sort(function(a, b){
+      return (b.created_at || 0) - (a.created_at || 0);
+    });
+
+    var tabsEl = document.getElementById("downloads-tabs");
+    if(tabsEl){
+      var activeBtn = tabsEl.querySelector('[data-dltab="active"]');
+      var doneBtn = tabsEl.querySelector('[data-dltab="done"]');
+      if(activeBtn) activeBtn.textContent = "กำลังดำเนินการ (" + unfinished.length + ")";
+      if(doneBtn) doneBtn.textContent = "สำเร็จ (" + finished.length + ")";
+    }
+
+    var currentJobs = state.downloadTab === "done" ? finished : unfinished;
+
     var list = document.getElementById("downloads-list");
     var statusEl = document.getElementById("downloads-status");
-    if(!jobs || jobs.length === 0){
+    if(currentJobs.length === 0){
       list.innerHTML = "";
       statusEl.style.display = "block";
-      statusEl.textContent = "ยังไม่มีงานดาวน์โหลด";
+      statusEl.textContent = DOWNLOAD_TAB_EMPTY[state.downloadTab] || DOWNLOAD_TAB_EMPTY.active;
       return;
     }
     statusEl.style.display = "none";
-    list.innerHTML = jobs.map(renderJobCard).join("");
+    list.innerHTML = currentJobs.map(renderJobCard).join("");
     list.querySelectorAll(".btn-job").forEach(function(btn){
       btn.addEventListener("click", function(){
         jobAction(btn.dataset.id, btn.dataset.action, btn);
       });
+    });
+  }
+
+  var downloadsTabsEl = document.getElementById("downloads-tabs");
+  if(downloadsTabsEl){
+    downloadsTabsEl.addEventListener("click", function(e){
+      var btn = e.target.closest(".tab-btn");
+      if(!btn) return;
+      state.downloadTab = btn.dataset.dltab;
+      downloadsTabsEl.querySelectorAll(".tab-btn").forEach(function(b){ b.classList.remove("active"); });
+      btn.classList.add("active");
+      renderDownloads(state.lastJobs);
     });
   }
 
@@ -1496,9 +1536,16 @@
 
   async function pollDownloads(){
     try{
+      var prevJobs = state.lastJobs;
       var data = await apiFetch("/api/downloads");
       var jobs = data.jobs || [];
+      var prevDoneIds = {};
+      prevJobs.forEach(function(j){ if(j.state === "done") prevDoneIds[j.id] = true; });
+      var newlyDone = jobs.some(function(j){ return j.state === "done" && !prevDoneIds[j.id]; });
       renderDownloads(jobs);
+      if(newlyDone){
+        await loadModels();
+      }
       var hasActive = jobs.some(function(j){
         return ["queued","active","paused"].indexOf(j.state) !== -1;
       });

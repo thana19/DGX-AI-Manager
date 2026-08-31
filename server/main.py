@@ -101,6 +101,7 @@ def _job_to_api(job: downloads.DownloadJob) -> dict[str, Any]:
         "total_bytes": job.total_bytes,
         "speed_bps": job.speed_bps,
         "eta_seconds": job.eta_seconds,
+        "created_at": job.created_at,
         "files": [
             {
                 "dest": f.dest, "state": f.state.value,

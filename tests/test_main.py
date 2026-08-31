@@ -446,6 +446,26 @@ def test_downloads_when_aria2_dead_does_not_break_endpoint(client, monkeypatch):
     assert resp.json() == {"jobs": []}
 
 
+def test_downloads_list_includes_created_at(client, monkeypatch):
+    from server.downloads import DownloadJob, DownloadState
+
+    mgr = main.get_download_manager()
+
+    def dead_client_post(*args, **kwargs):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("POST", "http://127.0.0.1:6800/jsonrpc"))
+
+    monkeypatch.setattr(mgr._aria2._client, "post", dead_client_post)
+
+    job = DownloadJob(id="j1", model_id="m", files=[], created_at=123.0, state=DownloadState.DONE)
+    mgr._jobs[job.id] = job
+
+    resp = client.get("/api/downloads")
+    assert resp.status_code == 200
+    jobs = resp.json()["jobs"]
+    assert len(jobs) == 1
+    assert jobs[0]["created_at"] == 123.0
+
+
 def test_create_download_without_dl_returns_400(client):
     resp = client.post("/api/downloads", json={"model_id": "qwen36-td-q2k"})  # entry นี้ไม่มี dl:
     assert resp.status_code == 400
