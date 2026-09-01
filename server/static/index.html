@@ -141,6 +141,8 @@
   .instance-file{word-break:break-all; flex:1; min-width:120px;}
   .instance-meta{color:var(--sub); font-size:0.78rem; display:flex; gap:12px; flex-wrap:wrap;}
   .instance-actions{margin-left:auto;}
+  .instance-usage{flex-basis:100%; display:flex; gap:12px; flex-wrap:wrap;
+    color:var(--sub); font-size:0.78rem; padding-left:21px;}
 
   /* ===== catalog ===== */
   #catalog-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:14px;}
@@ -716,8 +718,9 @@
     metaParts.push("<span>RSS: " + escapeHtml(fmtGB(inst.rss_gb)) + "</span>");
 
     var usage = state.usage[inst.port];
+    var usageParts = [];
     if(usage && usage.tok_in != null){
-      metaParts.push(
+      usageParts.push(
         '<span title="token สะสมตั้งแต่โหลดโมเดล — พิสูจน์ว่าถูกเรียกจริง">🧮 เข้า ' +
         fmtK(usage.tok_in) + ' / ออก ' + fmtK(usage.tok_out) + '</span>'
       );
@@ -727,11 +730,14 @@
         var rateHtml = displayRate > 0
           ? ' <span style="color:var(--green);">⚡ ' + displayRate.toFixed(0) + ' tok/s</span>'
           : '';
-        metaParts.push('<span style="color:var(--orange);">⏳ กำลังประมวลผล</span>' + rateHtml);
+        usageParts.push('<span style="color:var(--orange);">⏳ กำลังประมวลผล</span>' + rateHtml);
       }else if(usage.lastRate > 0){
-        metaParts.push('<span>· <span style="color:var(--green);">⚡ ล่าสุด ' + usage.lastRate.toFixed(0) + ' tok/s</span></span>');
+        usageParts.push('<span style="color:var(--green);">⚡ ล่าสุด ' + usage.lastRate.toFixed(0) + ' tok/s</span>');
       }
     }
+    var usageHtml = usageParts.length
+      ? '<div class="instance-usage">' + usageParts.join("") + '</div>'
+      : '';
 
     return (
       '<div class="card instance-row" data-port="' + escapeHtml(inst.port) + '">' +
@@ -745,6 +751,7 @@
           '<button class="' + stopClass + ' btn-instance-stop" data-port="' + escapeHtml(inst.port) + '"' +
             (isMain ? ' data-main="1"' : '') + '>⏹ หยุด</button>' +
         '</div>' +
+        usageHtml +
       '</div>'
     );
   }
