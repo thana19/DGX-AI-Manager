@@ -54,6 +54,8 @@ class ModelEntry(BaseModel):
     requires: dict[str, str] | None = None
     dl: list[str] | None = None
     note: str | None = None
+    # env เพิ่มเติมที่ activate ต้องยัดเข้า subprocess ก่อนเรียก engine script (parser/MTP ของ vLLM เป็นต้น)
+    engine_env: dict[str, str] | None = None
     # ไม่ได้อยู่ในไฟล์ — เติมให้ตอนโหลด (vendor/user) เพื่อบอก UI ว่ามาจากไหน
     source: Literal["vendor", "user"] = "vendor"
 
@@ -211,7 +213,24 @@ def is_ready(entry: ModelEntry) -> bool:
     """ไฟล์ครบพร้อมรันเลยไหม"""
     if _is_folder_entry(entry):
         d = expand(entry)
-        return os.path.isdir(d) and len(os.listdir(d)) > 0
+        if not os.path.isdir(d) or len(os.listdir(d)) == 0:
+            return False
+
+        # ดาวน์โหลดค้างกลางทาง (.aria2 ค้าง) หรือ dl: ที่ประกาศไว้ยังมาไม่ครบ ⇒ ยังไม่พร้อม
+        # เดินทั้ง tree เพราะไฟล์ของ vllm วางแบนอยู่ในโฟลเดอร์เดียว ไม่มี shard/โฟลเดอร์ย่อยแบบ gguf
+        found_basenames: set[str] = set()
+        for _root, _dirs, filenames in os.walk(d):
+            for fn in filenames:
+                if fn.endswith(_ARIA2_SUFFIX):
+                    return False
+                found_basenames.add(fn)
+
+        if entry.dl:
+            expected_basenames = {url.rsplit("/", 1)[-1] for url in entry.dl}
+            if not expected_basenames <= found_basenames:
+                return False
+
+        return True
 
     files = shard_paths(entry) + _extra_gguf_from_args(entry.args)
     for f in files:

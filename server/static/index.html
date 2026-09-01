@@ -534,7 +534,8 @@
     usage: {},               // key = port → {tok_in, tok_out, busy, t, rate, lastRate}
     usageFastPollTimer: null,
     resolveResult: null,
-    resolveRepoId: "",
+    resolveRepoId: "",       // resolved_repo_id ของ backend (fallback = ข้อความดิบ) — ใช้สร้าง dl URL
+    resolveRepoRawInput: "", // ข้อความดิบที่พี่หนุ่มพิมพ์/วาง — ใช้เทียบโชว์ hint "ใช้ repo: X" เท่านั้น
     downloadsTimer: null,
     downloadTab: "active",
     lastJobs: []
@@ -1250,7 +1251,8 @@
         body: JSON.stringify({repo_id: repoId, token: tokenInput.value.trim()})
       });
       state.resolveResult = data;
-      state.resolveRepoId = repoId;
+      state.resolveRepoRawInput = repoId;
+      state.resolveRepoId = data.resolved_repo_id || repoId;
       statusEl.textContent = "";
       renderResolveResult(data);
     }catch(e){
@@ -1330,10 +1332,19 @@
     var infoParts = [];
     infoParts.push("<span>arch: <b>" + escapeHtml(data.arch || "ไม่ทราบ") + "</b></span>");
     infoParts.push("<span>ctx_train: <b>" + escapeHtml(data.ctx_train || "-") + "</b></span>");
+    if(data.engine){
+      infoParts.push("<span>engine: <b>" + escapeHtml(data.engine) + "</b></span>");
+    }
+    if(data.format){
+      infoParts.push("<span>format: <b>" + escapeHtml(data.format) + "</b></span>");
+    }
     if(data.gated){
       infoParts.push('<span style="color:var(--orange);">🔒 repo นี้เป็น gated — ถ้าตรวจสอบไม่ผ่าน ให้ใส่ HF token แล้วลองใหม่</span>');
     }
-    if(data.resolved_repo_id && data.resolved_repo_id !== state.resolveRepoId){
+    if(data.engine_env && data.engine_env.VLLM_TOOL_PARSER === ""){
+      infoParts.push('<span style="color:var(--orange);">⚠️ ไม่รู้จัก parser ของตระกูลโมเดลนี้ — แชทได้ปกติ แต่ tool calling จะใช้ไม่ได้</span>');
+    }
+    if(data.resolved_repo_id && data.resolved_repo_id !== state.resolveRepoRawInput){
       infoParts.push('<span style="color:var(--sub);">ใช้ repo: <b>' + escapeHtml(data.resolved_repo_id) + '</b></span>');
     }
     infoEl.innerHTML = infoParts.join("");
@@ -1341,7 +1352,10 @@
     var tbody = document.getElementById("resolve-tbody");
     var quants = data.quants || [];
     if(quants.length === 0){
-      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--sub);">ไม่พบ quant ในรีโปนี้</td></tr>';
+      var emptyMsg = data.format
+        ? "ไม่พบ quant ในรีโปนี้"
+        : "repo นี้ไม่ใช่ GGUF และไม่ใช่ safetensors — ยังไม่รองรับ";
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--sub);">' + escapeHtml(emptyMsg) + '</td></tr>';
     }else{
       tbody.innerHTML = quants.map(function(q, idx){
         return "<tr>" +
@@ -1385,6 +1399,34 @@
   function buildGuessedPayload(quant){
     var repoId = state.resolveRepoId;
     var repoName = repoId.split("/").pop();
+    var result = state.resolveResult;
+
+    if(result.format === "safetensors"){
+      var vdl = (quant.files || []).map(function(f){
+        return "https://huggingface.co/" + repoId + "/resolve/main/" + f.path;
+      });
+      // ชื่อ repo safetensors มักลงท้ายด้วยชื่อ quant อยู่แล้ว (Qwen3-8B-FP8) — ไม่ต้องต่อซ้ำเป็น ...-fp8-fp8
+      var vslug = slugify(repoName);
+      var vquant = slugify(quant.key);
+      var vpayload = {
+        id: (vslug === vquant || vslug.slice(-(vquant.length + 1)) === "-" + vquant) ? vslug : vslug + "-" + vquant,
+        name: repoId + " (" + quant.key + ")",
+        engine: "vllm",
+        path: "~/models/" + vquant + "/" + vslug,
+        ctx: result.ctx_train || 0,
+        args: "",
+        need_gb: Math.ceil(quant.total_gb || 0),
+        arch: result.arch || "",
+        ctx_train: result.ctx_train || 0,
+        source_repo: repoId,
+        note: "",
+        dl: vdl
+      };
+      if(result.requires){ vpayload.requires = result.requires; }
+      if(result.engine_env){ vpayload.engine_env = result.engine_env; }
+      return vpayload;
+    }
+
     var firstFile = (quant.files && quant.files[0]) ? basename(quant.files[0].path) : "";
     var dl = (quant.files || []).map(function(f){
       return "https://huggingface.co/" + repoId + "/resolve/main/" + f.path;
@@ -1394,18 +1436,18 @@
       name: repoId + " (" + quant.key + ")",
       engine: "llamacpp",
       path: "~/models/gguf/" + repoName + "/" + firstFile,
-      ctx: state.resolveResult.ctx_train || 0,
+      ctx: result.ctx_train || 0,
       args: "",
       need_gb: Math.ceil(quant.total_gb || 0),
-      arch: state.resolveResult.arch || "",
-      ctx_train: state.resolveResult.ctx_train || 0,
+      arch: result.arch || "",
+      ctx_train: result.ctx_train || 0,
       source_repo: repoId,
       note: "",
       dl: dl
     };
   }
 
-  var advancedHidden = null; // {arch, ctx_train, source_repo, note, dl}
+  var advancedHidden = null; // {arch, ctx_train, source_repo, note, dl, requires, engine_env}
 
   function onAddQuantClick(quant, btn){
     var payload = buildGuessedPayload(quant);
@@ -1423,7 +1465,9 @@
         ctx_train: payload.ctx_train,
         source_repo: payload.source_repo,
         note: payload.note,
-        dl: payload.dl
+        dl: payload.dl,
+        requires: payload.requires || null,
+        engine_env: payload.engine_env || null
       };
       var form = document.getElementById("advanced-form");
       form.classList.add("open");
@@ -1454,6 +1498,8 @@
       payload.source_repo = advancedHidden.source_repo;
       payload.note = advancedHidden.note;
       payload.dl = advancedHidden.dl;
+      if(advancedHidden.requires){ payload.requires = advancedHidden.requires; }
+      if(advancedHidden.engine_env){ payload.engine_env = advancedHidden.engine_env; }
     }
     if(!payload.id || !payload.path){
       showMsg("กรุณากรอก id และ path ให้ครบ", "error");

@@ -69,11 +69,12 @@ class HfFile:
 class QuantGroup:
     """quant 1 ตัวที่ผู้ใช้เลือกโหลดได้ — อาจมีหลายไฟล์ถ้าเป็น shard"""
 
-    key: str  # ชื่อโชว์ผู้ใช้ เช่น "UD-IQ1_S" หรือ "Q8_0"
+    key: str  # ชื่อโชว์ผู้ใช้ เช่น "UD-IQ1_S" หรือ "Q8_0" (safetensors: quant_label ของทั้ง repo)
     files: list[HfFile]  # ไฟล์หลัก (shard ครบชุด) เรียงตาม shard
     total_bytes: int  # ผลรวมของ files เท่านั้น (ไม่รวม companions)
     shard_count: int  # 1 = ไฟล์เดียว
-    companions: list[HfFile] = field(default_factory=list)  # mmproj-/mtp-/dflash- ของ repo นี้
+    companions: list[HfFile] = field(default_factory=list)  # mmproj-/mtp-/dflash- ของ repo นี้ (gguf เท่านั้น)
+    format: str = "gguf"  # "gguf" (group_quants) หรือ "safetensors" (group_weights)
 
     @property
     def draft_files(self) -> list[HfFile]:
@@ -104,6 +105,32 @@ def fetch_repo(repo_id: str, *, token: str | None = None, client: httpx.Client |
         raise GatedRepoError(f"{repo_id} ติด gate — ต้องใช้ HF_TOKEN ที่มีสิทธิ์เข้าถึง")
     if resp.status_code == 404:
         raise RepoNotFoundError(f"ไม่พบ repo: {repo_id}")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fetch_config(repo_id: str, *, token: str | None = None, client: httpx.Client | None = None) -> dict:
+    """ยิง config.json ตรง ๆ จาก resolve URL ของ repo (ไฟล์เล็กหลักร้อย byte)
+
+    ใช้กับ repo safetensors ที่ HF API ปกติไม่คืน arch/ctx มาให้ (ต่างจาก GGUF ที่อ่านจาก header เอาเอง)
+    HF จะ 302 ไป CDN เสมอ ⇒ ต้อง follow_redirects=True ไม่งั้นได้ 3xx เปล่า ๆ
+    401/403/404 conventions เดียวกับ fetch_repo()
+    """
+    own_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        resp = http_client.get(
+            f"{RESOLVE_BASE}/{repo_id}/resolve/main/config.json", headers=headers, follow_redirects=True,
+        )
+    finally:
+        if own_client:
+            http_client.close()
+
+    if resp.status_code in (401, 403):
+        raise GatedRepoError(f"{repo_id} ติด gate — ต้องใช้ HF_TOKEN ที่มีสิทธิ์เข้าถึง")
+    if resp.status_code == 404:
+        raise RepoNotFoundError(f"ไม่พบ config.json ใน repo: {repo_id}")
     resp.raise_for_status()
     return resp.json()
 
@@ -195,6 +222,186 @@ def group_quants(files: list[HfFile]) -> list[QuantGroup]:
 
     groups.sort(key=lambda g: g.total_bytes)  # น้อยไปมาก (ข้อ 7) — ผู้ใช้มองหาตัวที่แรมพอก่อน
     return groups
+
+
+# ---------------------------------------------------------------------------
+# safetensors (vLLM) — 1 repo = 1 quant group เสมอ ไม่มีโฟลเดอร์ย่อย/หลาย quant ต่อ repo
+# ⚠️ ห้ามใช้ _is_companion()/companion_kind() กับไฟล์กลุ่มนี้ — นั่นคือกติกาของ llama.cpp (-md)
+# ไม่ใช่ของ vLLM ⇒ model_mtp.safetensors ต้องอยู่ใน files เสมอ ไม่ใช่ companions
+# ---------------------------------------------------------------------------
+
+# นามสกุลไฟล์ที่ไม่ใช่น้ำหนักโมเดล — ตัดออกจากกลุ่มเสมอ (ตรงกับ dl: ที่ vendor curate ไว้เองใน catalog.yaml)
+_SAFETENSORS_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+
+
+def _is_excluded_from_weights(basename: str) -> bool:
+    """True ถ้าไฟล์นี้ไม่ใช่น้ำหนักโมเดล/asset ที่ต้องดาวน์โหลด (เอกสาร/รูป/license)"""
+    if basename == ".gitattributes":
+        return True
+    if basename.upper().startswith("LICENSE"):
+        return True
+    lower = basename.lower()
+    if lower.endswith(".md"):  # ครอบ README.md ไปในตัว
+        return True
+    if lower.endswith(_SAFETENSORS_IMAGE_EXTS):
+        return True
+    return False
+
+
+def has_safetensors(files: list[HfFile]) -> bool:
+    """repo นี้เป็น safetensors (vLLM) ไหม — มีไฟล์ .safetensors อย่างน้อย 1 ไฟล์"""
+    return any(f.path.endswith(".safetensors") for f in files)
+
+
+def config_arch_ctx(config: dict) -> tuple[str | None, int | None]:
+    """(arch, ctx_train) จาก config.json — ctx อาจซ้อนอยู่ใน text_config (ข้อเท็จจริงที่ verify แล้ว)
+
+    ระดับบนสุดชนะเสมอถ้ามีทั้งสองที่ — text_config เป็นแค่ fallback
+    """
+    architectures = config.get("architectures")
+    arch = architectures[0] if architectures else None
+
+    ctx = config.get("max_position_embeddings")
+    if ctx is None:
+        text_config = config.get("text_config") or {}
+        ctx = text_config.get("max_position_embeddings")
+
+    return arch, ctx
+
+
+def _quant_label_from_weights(weights: dict) -> str | None:
+    """map weights dict ({"type", "num_bits", "group_size", ...}) ของ 1 config_group เป็น label
+
+    None = ไม่มี num_bits ใช้งานได้ (ขาด/ไม่ใช่ตัวเลข) — เรียกไม่ควรใช้กลุ่มนี้
+    """
+    num_bits = weights.get("num_bits")
+    if not isinstance(num_bits, (int, float)) or isinstance(num_bits, bool):
+        return None
+    num_bits = int(num_bits)
+
+    w_type = str(weights.get("type") or "").lower()
+    if w_type == "int":
+        return f"INT{num_bits}"
+    if w_type == "float":
+        if num_bits == 4 and weights.get("group_size") == 16:
+            return "NVFP4"
+        if num_bits == 4:
+            return "FP4"
+        return f"FP{num_bits}"
+    return None
+
+
+def quant_label(config: dict) -> str:
+    """ชื่อ quant ของทั้ง repo safetensors — จาก quantization_config ก่อน ไม่มีก็ dtype ไม่มีอีกก็ safetensors เฉย ๆ"""
+    quant_cfg = config.get("quantization_config")
+    if quant_cfg:
+        method = quant_cfg.get("quant_method")
+        if method:
+            method_lower = str(method).lower()
+            if method_lower in ("modelopt", "nvfp4"):
+                return "NVFP4"
+            if method_lower == "compressed-tensors":
+                # "compressed-tensors" คือชื่อ *format ของไฟล์* ไม่ใช่ชื่อ quant — quant จริงอยู่ใน
+                # config_groups (repo ผสมหลายความละเอียดในไฟล์เดียว เช่น unsloth/Qwen3.8-27B-NVFP4
+                # มี group_0 = 8-bit float, group_1 = 4-bit float group_size 16) ⇒ ต้องเลือก num_bits
+                # ต่ำสุด เพราะนั่นคือความละเอียดที่หยาบที่สุด/เป็นตัวที่โมเดลถูกตั้งชื่อ-การตลาดตาม
+                # (อ่าน group_0 เฉย ๆ จะได้ "FP8" ทั้งที่โมเดลคือ NVFP4)
+                config_groups = quant_cfg.get("config_groups")
+                if isinstance(config_groups, dict) and config_groups:
+                    best_bits: float | None = None
+                    best_weights: dict | None = None
+                    for group in config_groups.values():
+                        if not isinstance(group, dict):
+                            continue
+                        weights = group.get("weights")
+                        if not isinstance(weights, dict):
+                            continue
+                        num_bits = weights.get("num_bits")
+                        if not isinstance(num_bits, (int, float)) or isinstance(num_bits, bool):
+                            continue
+                        if best_bits is None or num_bits < best_bits:
+                            best_bits = num_bits
+                            best_weights = weights
+                    if best_weights is not None:
+                        label = _quant_label_from_weights(best_weights)
+                        if label is not None:
+                            return label
+                # config_groups ไม่มี/ว่าง/ไม่มี group ไหนใช้ num_bits ได้ ⇒ fallback แบบเดิม
+                return str(method).upper()
+            return str(method).upper()
+
+    dtype = config.get("torch_dtype") or config.get("dtype")
+    if dtype:
+        dtype_lower = str(dtype).lower()
+        if dtype_lower == "bfloat16":
+            return "BF16"
+        if dtype_lower == "float16":
+            return "F16"
+        return str(dtype).upper()
+
+    return "safetensors"
+
+
+def group_weights(files: list[HfFile], config: dict) -> list[QuantGroup]:
+    """จัดกลุ่ม repo safetensors เป็น 1 quant group เดียว (ทั้ง repo) — ดู docstring ก้อนบนนี้
+
+    files ที่รวม = ทุกไฟล์ ยกเว้น .gitattributes/README/*.md/LICENSE*/รูปภาพ (verify ตรงกับ
+    catalog.yaml:106-117 ของ unsloth/Qwen3.8-27B-NVFP4 เป๊ะ) — model_mtp.safetensors ต้องติดไปด้วยเสมอ
+    """
+    if not has_safetensors(files):
+        return []
+
+    included = [f for f in files if not _is_excluded_from_weights(f.path.rsplit("/", 1)[-1])]
+    shard_count = sum(1 for f in included if f.path.endswith(".safetensors"))
+
+    return [
+        QuantGroup(
+            key=quant_label(config),
+            files=included,
+            total_bytes=sum(f.size for f in included),
+            shard_count=shard_count,
+            companions=[],
+            format="safetensors",
+        )
+    ]
+
+
+# ตระกูลโมเดล → parser ของ vLLM (--tool-call-parser / --reasoning-parser)
+# ตระกูลที่ไม่รู้จัก = ไม่ใส่ parser เลย (เดาผิดอันตรายกว่าไม่ใส่ — ดู PRD ข้อ 10)
+def vllm_parsers(model_type: str | None) -> dict[str, str]:
+    """คืน engine_env สำหรับเลือก parser ของ vLLM ตาม model_type ใน config.json"""
+    empty = {"VLLM_TOOL_PARSER": "", "VLLM_REASONING_PARSER": ""}
+    if not model_type:
+        return empty
+
+    mt = model_type.lower()
+    if mt.startswith("qwen3"):  # qwen3 / qwen3_5 / qwen3_moe ฯลฯ
+        return {"VLLM_TOOL_PARSER": "qwen3_xml", "VLLM_REASONING_PARSER": "qwen3"}
+    if mt == "llama":
+        return {"VLLM_TOOL_PARSER": "llama3_json", "VLLM_REASONING_PARSER": ""}
+    if mt == "mistral":
+        return {"VLLM_TOOL_PARSER": "mistral", "VLLM_REASONING_PARSER": ""}
+    if mt.startswith("deepseek_v3"):
+        return {"VLLM_TOOL_PARSER": "deepseek_v3", "VLLM_REASONING_PARSER": "deepseek_r1"}
+    return empty
+
+
+def vllm_engine_env(files: list[HfFile], config: dict) -> dict[str, str]:
+    """engine_env เต็มของ vLLM: parser ตาม model_type + ปิด MTP ถ้าไม่มีไฟล์ *mtp*.safetensors
+
+    ⚠️ ไม่มี MTP ⇒ ต้องใส่ VLLM_SPECULATIVE="" ชัดเจน (ค่าว่าง = ปิด) เพราะ default ของ vllm.sh คือ "เปิด"
+    (ใช้ ${VAR-default} ไม่ใช่ ${VAR:-default}) มี MTP ⇒ ไม่ใส่คีย์นี้เลย ปล่อยให้ default เปิดตามเดิม
+    """
+    env = dict(vllm_parsers(config.get("model_type")))
+
+    has_mtp = any(
+        f.path.rsplit("/", 1)[-1].lower().endswith(".safetensors") and "mtp" in f.path.rsplit("/", 1)[-1].lower()
+        for f in files
+    )
+    if not has_mtp:
+        env["VLLM_SPECULATIVE"] = ""
+
+    return env
 
 
 def suggest_args(group: QuantGroup, dest_dir: str) -> str:

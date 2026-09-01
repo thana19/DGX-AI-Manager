@@ -1,0 +1,12 @@
+{
+  "architectures": ["Qwen3ForCausalLM"],
+  "model_type": "qwen3",
+  "text_config": {
+    "model_type": "qwen3",
+    "max_position_embeddings": 262144
+  },
+  "torch_dtype": "bfloat16",
+  "quantization_config": {
+    "quant_method": "modelopt"
+  }
+}

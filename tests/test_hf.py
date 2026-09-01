@@ -18,13 +18,20 @@ from server.hf import (
     RepoNotFoundError,
     SearchHit,
     companion_kind,
+    config_arch_ctx,
+    fetch_config,
     fetch_repo,
     group_quants,
+    group_weights,
+    has_safetensors,
     list_files,
     normalize_repo_id,
+    quant_label,
     resolve_url,
     search_models,
     suggest_args,
+    vllm_engine_env,
+    vllm_parsers,
 )
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -572,3 +579,307 @@ def test_suggest_args_ห้ามมี_flag_c():
 
     args = suggest_args(group, "/models/foo")
     assert "-c" not in args.split()
+
+
+# ---------------------------------------------------------------------------
+# fetch_config
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_config_follows_redirect_and_parses_json():
+    payload = {"architectures": ["Qwen3ForCausalLM"], "max_position_embeddings": 40960}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/Qwen/Qwen3-8B-FP8/resolve/main/config.json"
+        return httpx.Response(200, json=payload)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = fetch_config("Qwen/Qwen3-8B-FP8", client=client)
+
+    assert result == payload
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_fetch_config_gated_raises(status: int):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": "gated"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(GatedRepoError):
+        fetch_config("some/gated-repo", client=client)
+
+
+def test_fetch_config_404_raises_not_found():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(RepoNotFoundError):
+        fetch_config("nope/does-not-exist", client=client)
+
+
+def test_fetch_config_sends_bearer_token_when_given():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    fetch_config("some/repo", token="hf_secrettoken", client=client)
+
+    assert seen["auth"] == "Bearer hf_secrettoken"
+
+
+# ---------------------------------------------------------------------------
+# config_arch_ctx — arch/ctx ของ safetensors อ่านจาก config.json (top-level และ text_config)
+# ---------------------------------------------------------------------------
+
+
+def test_config_arch_ctx_top_level():
+    config = _load_fixture("config_qwen3_fp8.json")
+    arch, ctx = config_arch_ctx(config)
+    assert arch == "Qwen3ForCausalLM"
+    assert ctx == 40960
+
+
+def test_config_arch_ctx_nested_text_config():
+    """ข้อเท็จจริง verify แล้ว: โมเดล NVFP4 จริงมี max_position_embeddings อยู่ใน text_config เท่านั้น"""
+    config = _load_fixture("config_nested_text_config.json")
+    arch, ctx = config_arch_ctx(config)
+    assert arch == "Qwen3ForCausalLM"
+    assert ctx == 262144
+
+
+def test_config_arch_ctx_top_level_wins_over_nested():
+    config = {
+        "architectures": ["Qwen3ForCausalLM"],
+        "max_position_embeddings": 40960,
+        "text_config": {"max_position_embeddings": 262144},
+    }
+    arch, ctx = config_arch_ctx(config)
+    assert ctx == 40960
+
+
+def test_config_arch_ctx_missing_returns_none():
+    assert config_arch_ctx({}) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# quant_label
+# ---------------------------------------------------------------------------
+
+
+def test_quant_label_fp8():
+    config = _load_fixture("config_qwen3_fp8.json")
+    assert quant_label(config) == "FP8"
+
+
+def test_quant_label_modelopt_and_nvfp4_map_to_nvfp4():
+    assert quant_label({"quantization_config": {"quant_method": "modelopt"}}) == "NVFP4"
+    assert quant_label({"quantization_config": {"quant_method": "nvfp4"}}) == "NVFP4"
+
+
+def test_quant_label_no_quant_config_uses_dtype():
+    assert quant_label({"torch_dtype": "bfloat16"}) == "BF16"
+    assert quant_label({"torch_dtype": "float16"}) == "F16"
+
+
+def test_quant_label_fallback_safetensors():
+    assert quant_label({}) == "safetensors"
+
+
+def test_quant_label_compressed_tensors_nvfp4_regression():
+    """Regression: unsloth/Qwen3.8-27B-NVFP4 มี quant_method == "compressed-tensors" (ชื่อ format
+    ไม่ใช่ชื่อ quant) ⇒ ต้องอ่าน config_groups แล้วเลือกกลุ่มที่ num_bits ต่ำสุด (group_1: 4-bit float,
+    group_size 16) ไม่ใช่ uppercase("compressed-tensors") หรือกลุ่มแรกที่เจอ (group_0: 8-bit → "FP8" ผิด)
+    """
+    config = _load_fixture("config_qwen38_nvfp4.json")
+    assert quant_label(config) == "NVFP4"
+
+
+def test_quant_label_compressed_tensors_single_fp8_group():
+    config = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {
+                "group_0": {"weights": {"type": "float", "num_bits": 8, "group_size": None, "strategy": "channel"}},
+            },
+        }
+    }
+    assert quant_label(config) == "FP8"
+
+
+def test_quant_label_compressed_tensors_fp4_without_group_size_16():
+    config = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {
+                "group_0": {"weights": {"type": "float", "num_bits": 4, "group_size": None, "strategy": "tensor"}},
+            },
+        }
+    }
+    assert quant_label(config) == "FP4"
+
+    config_other_group_size = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {
+                "group_0": {"weights": {"type": "float", "num_bits": 4, "group_size": 32, "strategy": "tensor"}},
+            },
+        }
+    }
+    assert quant_label(config_other_group_size) == "FP4"
+
+
+def test_quant_label_compressed_tensors_int_group():
+    config = {
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "config_groups": {
+                "group_0": {"weights": {"type": "int", "num_bits": 8, "group_size": 128, "strategy": "group"}},
+            },
+        }
+    }
+    assert quant_label(config) == "INT8"
+
+
+def test_quant_label_compressed_tensors_missing_config_groups_falls_back():
+    assert quant_label({"quantization_config": {"quant_method": "compressed-tensors"}}) == "COMPRESSED-TENSORS"
+    assert (
+        quant_label({"quantization_config": {"quant_method": "compressed-tensors", "config_groups": {}}})
+        == "COMPRESSED-TENSORS"
+    )
+
+
+# ---------------------------------------------------------------------------
+# has_safetensors / group_weights
+# ---------------------------------------------------------------------------
+
+
+def test_has_safetensors_true_for_fp8_repo():
+    files = _load("hf_qwen3-8b-fp8_blobs.json")
+    assert has_safetensors(files) is True
+
+
+def test_has_safetensors_false_for_gguf_repo():
+    files = _load("hf_qwen38-27b-gguf_blobs.json")
+    assert has_safetensors(files) is False
+
+
+def test_group_weights_no_safetensors_returns_empty():
+    files = _load("hf_qwen38-27b-gguf_blobs.json")
+    assert group_weights(files, {}) == []
+
+
+def test_group_weights_nvfp4_matches_catalog_yaml_dl_list():
+    """ตัวไม่แปรผันที่ verify แล้ว: กติกาคัดไฟล์ต้องได้ผลลัพธ์เดียวกับที่ vendor curate ไว้เองใน catalog.yaml:106-117"""
+    import pathlib
+
+    import yaml
+
+    catalog_path = pathlib.Path(__file__).parent.parent / "catalog.yaml"
+    catalog_raw = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+    entry = next(m for m in catalog_raw["models"] if m["id"] == "qwen38-nvfp4-vllm")
+    expected_basenames = {url.rsplit("/", 1)[-1] for url in entry["dl"]}
+
+    files = _load("hf_qwen38-27b-nvfp4_blobs.json")
+    groups = group_weights(files, {})
+    assert len(groups) == 1
+
+    got_basenames = {f.path.rsplit("/", 1)[-1] for f in groups[0].files}
+    assert got_basenames == expected_basenames
+
+
+def test_group_weights_nvfp4_mtp_stays_in_files_not_companions():
+    files = _load("hf_qwen38-27b-nvfp4_blobs.json")
+    groups = group_weights(files, {})
+    assert len(groups) == 1
+    g = groups[0]
+
+    assert any(f.path == "model_mtp.safetensors" for f in g.files)
+    assert g.companions == []
+
+
+def test_group_weights_key_from_quant_label():
+    files = _load("hf_qwen3-8b-fp8_blobs.json")
+    config = _load_fixture("config_qwen3_fp8.json")
+    groups = group_weights(files, config)
+
+    assert len(groups) == 1
+    assert groups[0].key == "FP8"
+    assert groups[0].format == "safetensors"
+
+
+def test_group_weights_shard_count_counts_safetensors_files_only():
+    files = _load("hf_qwen3-8b-fp8_blobs.json")
+    config = _load_fixture("config_qwen3_fp8.json")
+    groups = group_weights(files, config)
+
+    assert groups[0].shard_count == 2  # model-00001-of-00002 / model-00002-of-00002
+    assert groups[0].total_bytes == sum(f.size for f in groups[0].files)
+
+
+def test_group_weights_excludes_readme_gitattributes_license():
+    files = _load("hf_qwen3-8b-fp8_blobs.json")
+    groups = group_weights(files, {})
+    basenames = {f.path for f in groups[0].files}
+
+    assert "README.md" not in basenames
+    assert ".gitattributes" not in basenames
+    assert "LICENSE" not in basenames
+
+
+# ---------------------------------------------------------------------------
+# GGUF regression: group_quants ต้องไม่เปลี่ยนพฤติกรรม + format ต้องเป็น "gguf"
+# ---------------------------------------------------------------------------
+
+
+def test_group_quants_format_is_gguf():
+    repo_json = _load_fixture("hf_qwen38-27b-gguf_blobs.json")
+    files = list_files(repo_json)
+    groups = group_quants(files)
+
+    assert len(groups) > 0
+    assert all(g.format == "gguf" for g in groups)
+
+
+# ---------------------------------------------------------------------------
+# vllm_parsers / vllm_engine_env
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model_type, expected",
+    [
+        ("qwen3", {"VLLM_TOOL_PARSER": "qwen3_xml", "VLLM_REASONING_PARSER": "qwen3"}),
+        ("qwen3_5", {"VLLM_TOOL_PARSER": "qwen3_xml", "VLLM_REASONING_PARSER": "qwen3"}),
+        ("qwen3_moe", {"VLLM_TOOL_PARSER": "qwen3_xml", "VLLM_REASONING_PARSER": "qwen3"}),
+        ("llama", {"VLLM_TOOL_PARSER": "llama3_json", "VLLM_REASONING_PARSER": ""}),
+        ("mistral", {"VLLM_TOOL_PARSER": "mistral", "VLLM_REASONING_PARSER": ""}),
+        ("deepseek_v3", {"VLLM_TOOL_PARSER": "deepseek_v3", "VLLM_REASONING_PARSER": "deepseek_r1"}),
+        ("some-unknown-family", {"VLLM_TOOL_PARSER": "", "VLLM_REASONING_PARSER": ""}),
+        (None, {"VLLM_TOOL_PARSER": "", "VLLM_REASONING_PARSER": ""}),
+    ],
+)
+def test_vllm_parsers_by_family(model_type, expected):
+    assert vllm_parsers(model_type) == expected
+
+
+def test_vllm_engine_env_disables_speculative_when_no_mtp_file():
+    """Qwen/Qwen3-8B-FP8 ไม่มี model_mtp.safetensors → ต้องปิด MTP ชัดเจน"""
+    files = _load("hf_qwen3-8b-fp8_blobs.json")
+    config = _load_fixture("config_qwen3_fp8.json")
+    env = vllm_engine_env(files, config)
+
+    assert env["VLLM_SPECULATIVE"] == ""
+    assert env["VLLM_TOOL_PARSER"] == "qwen3_xml"
+    assert env["VLLM_REASONING_PARSER"] == "qwen3"
+
+
+def test_vllm_engine_env_omits_speculative_key_when_mtp_present():
+    """unsloth/Qwen3.8-27B-NVFP4 มี model_mtp.safetensors → ปล่อยให้ default (เปิด) ของ vllm.sh ทำงาน"""
+    files = _load("hf_qwen38-27b-nvfp4_blobs.json")
+    env = vllm_engine_env(files, {"model_type": "qwen3"})
+
+    assert "VLLM_SPECULATIVE" not in env

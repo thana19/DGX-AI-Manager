@@ -234,7 +234,28 @@ def _resolve_suggestions_response(req: ResolveReq, query: str, message: str) -> 
             for h in hits
         ],
         "message": message,
+        "engine": None,
+        "format": None,
+        "requires": None,
+        "engine_env": None,
     }
+
+
+def _quants_to_api(groups: list[hf.QuantGroup], compat_out: dict[str, Any], ram_gb: float | None) -> list[dict[str, Any]]:
+    quants = []
+    for g in groups:
+        total_gb = _gb(g.total_bytes)
+        fits_ram = None if ram_gb is None else (total_gb * 1.05 + 3 <= ram_gb)
+        quants.append({
+            "key": g.key,
+            "total_bytes": g.total_bytes,
+            "total_gb": total_gb,
+            "shard_count": g.shard_count,
+            "files": [{"path": f.path, "size": f.size, "sha256": f.sha256} for f in g.files],
+            "fits_ram": fits_ram,
+            "compat": compat_out,
+        })
+    return quants
 
 
 @app.post("/api/models/resolve")
@@ -256,12 +277,14 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
     groups = hf.group_quants(files)
 
     ram_gb = software.mem_total_gb()
-    llamacpp_info = engines.detect("llamacpp")
 
-    # arch เป็นสมบัติของโมเดล ไม่ใช่ของ quant — ดึง GGUF header ครั้งเดียวจากไฟล์แรกของ quant เล็กสุด
-    arch: str | None = None
-    ctx_train: int | None = None
     if groups:
+        # --- GGUF (llama.cpp) — เส้นทางเดิม ไม่แตะพฤติกรรม ---
+        llamacpp_info = engines.detect("llamacpp")
+
+        # arch เป็นสมบัติของโมเดล ไม่ใช่ของ quant — ดึง GGUF header ครั้งเดียวจากไฟล์แรกของ quant เล็กสุด
+        arch: str | None = None
+        ctx_train: int | None = None
         smallest = min(groups, key=lambda g: g.total_bytes)
         url = hf.resolve_url(resolved_id, smallest.files[0].path)
         try:
@@ -271,36 +294,82 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
         except Exception:
             arch, ctx_train = None, None
 
-    compat = engines.check_arch(arch, "llamacpp", info=llamacpp_info)
-    compat_out = _compat_dict(compat)
+        compat = engines.check_arch(arch, "llamacpp", info=llamacpp_info)
+        compat_out = _compat_dict(compat)
 
-    quants = []
-    for g in groups:
-        total_gb = _gb(g.total_bytes)
-        fits_ram = None if ram_gb is None else (total_gb * 1.05 + 3 <= ram_gb)
-        quants.append({
-            "key": g.key,
-            "total_bytes": g.total_bytes,
-            "total_gb": total_gb,
-            "shard_count": g.shard_count,
-            "files": [{"path": f.path, "size": f.size, "sha256": f.sha256} for f in g.files],
-            "fits_ram": fits_ram,
-            "compat": compat_out,
-        })
+        quants = _quants_to_api(groups, compat_out, ram_gb)
+        companions = [{"path": c.path, "size_gb": _gb(c.size)} for c in groups[0].companions]
 
-    companions = [{"path": c.path, "size_gb": _gb(c.size)} for c in groups[0].companions] if groups else []
+        return {
+            "repo_id": req.repo_id,
+            "resolved_repo_id": resolved_id,
+            "gated": False,
+            "arch": arch,
+            "ctx_train": ctx_train,
+            "quants": quants,
+            "companions": companions,
+            "query": query,
+            "suggestions": [],
+            "message": None,
+            "engine": "llamacpp",
+            "format": "gguf",
+            "requires": None,
+            "engine_env": None,
+        }
 
+    if hf.has_safetensors(files):
+        # --- safetensors (vLLM) — arch/ctx จาก config.json ไม่ใช่ header ของไฟล์น้ำหนัก ---
+        try:
+            config = hf.fetch_config(resolved_id, token=req.token)
+        except Exception:
+            # config.json อ่านไม่ได้ (gate/404/parse พัง ฯลฯ) — degrade เป็นไม่รู้ arch/ctx แทนที่จะ 500
+            config = {}
+
+        arch, ctx_train = hf.config_arch_ctx(config)
+        groups = hf.group_weights(files, config)
+
+        vllm_info = engines.detect("vllm")
+        requires = {"vllm_image": vllm_info.version} if vllm_info.version else None
+        compat = engines.check_arch(arch, "vllm", info=vllm_info, requires=requires)
+        compat_out = _compat_dict(compat)
+
+        engine_env = hf.vllm_engine_env(files, config)
+
+        quants = _quants_to_api(groups, compat_out, ram_gb)
+
+        return {
+            "repo_id": req.repo_id,
+            "resolved_repo_id": resolved_id,
+            "gated": False,
+            "arch": arch,
+            "ctx_train": ctx_train,
+            "quants": quants,
+            "companions": [],
+            "query": query,
+            "suggestions": [],
+            "message": None,
+            "engine": "vllm",
+            "format": "safetensors",
+            "requires": requires,
+            "engine_env": engine_env,
+        }
+
+    # ไม่มีทั้ง .gguf และ .safetensors — repo นี้ไม่รู้จักรูปแบบไหนเลย
     return {
         "repo_id": req.repo_id,
         "resolved_repo_id": resolved_id,
         "gated": False,
-        "arch": arch,
-        "ctx_train": ctx_train,
-        "quants": quants,
-        "companions": companions,
+        "arch": None,
+        "ctx_train": None,
+        "quants": [],
+        "companions": [],
         "query": query,
         "suggestions": [],
         "message": None,
+        "engine": None,
+        "format": None,
+        "requires": None,
+        "engine_env": None,
     }
 
 
@@ -807,6 +876,8 @@ def activate(req: ActivateReq) -> dict[str, Any]:
     if req.ctx is not None:
         env["CTX"] = str(req.ctx)
     env["MODEL_ID"] = entry.id
+    # engine_env ของ entry (parser/MTP ของ vLLM เป็นต้น) — ต้องมาทีหลังสุดเพื่อให้ทับ env เดิมได้จริง
+    env.update({k: str(v) for k, v in (entry.engine_env or {}).items()})
 
     # ~ ใน args ต้องขยายเอง — ส่งเป็น argv ตรง ๆ ไม่ผ่าน shell จึงไม่มีใครขยายให้
     # (เจอจริง: -md ~/models/.../mtp-xxx.gguf → llama-server หา draft model ไม่เจอ)

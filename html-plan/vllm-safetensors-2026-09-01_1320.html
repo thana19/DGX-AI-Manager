@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vLLM safetensors — เพิ่มโมเดลจาก HF</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --border:#30363d;
+    --text:#e6edf3; --sub:#8b949e;
+    --accent:#58a6ff; --green:#3fb950; --orange:#d29922; --red:#f85149;
+  }
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:'Sarabun', system-ui, -apple-system, sans-serif;
+    margin:0; padding:32px 20px 80px; line-height:1.6;
+  }
+  .wrap{max-width:980px; margin:0 auto;}
+
+  header{margin-bottom:36px; border-bottom:1px solid var(--border); padding-bottom:20px;}
+  h1{font-size:1.7rem; margin:0 0 8px; color:var(--text);}
+  .subtitle{color:var(--sub); font-size:0.95rem;}
+
+  h2{
+    font-size:1.15rem; color:var(--accent); margin:0 0 14px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .step-num{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:26px; height:26px; border-radius:50%;
+    background:var(--card); border:1px solid var(--accent);
+    color:var(--accent); font-size:0.85rem; flex-shrink:0;
+  }
+  section{margin-bottom:40px;}
+
+  .card{
+    background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:16px 18px;
+  }
+
+  /* problem cards */
+  .problem-grid{display:grid; grid-template-columns:1fr 1.4fr; gap:14px;}
+  .problem-grid .card{border-left:3px solid var(--red);}
+  .problem-grid .card .icon{font-size:1.3rem; margin-bottom:6px;}
+  .problem-grid .card p{margin:6px 0 0; color:var(--sub); font-size:0.88rem;}
+  .example{
+    margin-top:10px; padding:8px 10px; background:#0d1117;
+    border:1px solid var(--border); border-radius:6px;
+    font-size:0.82rem; color:var(--orange);
+  }
+
+  table{width:100%; border-collapse:collapse; font-size:0.88rem;}
+  th, td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--border);}
+  th{color:var(--sub); font-weight:600; font-size:0.82rem; text-transform:uppercase; letter-spacing:0.02em;}
+  .table-scroll{overflow-x:auto; border:1px solid var(--border); border-radius:10px;}
+  .table-scroll table{border:none;}
+  .table-scroll .card{padding:0;}
+  tr.highlight td{background:rgba(210,153,34,0.10); color:var(--orange); font-weight:500;}
+  tr.highlight td:first-child{border-left:3px solid var(--orange); padding-left:9px;}
+
+  .status-ok{color:var(--green);}
+  .status-warn{color:var(--orange);}
+  .status-bad{color:var(--red);}
+
+  /* before/after resolve mock */
+  .ba-grid{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+  .ba-box{
+    background:var(--card); border:1px solid var(--border); border-radius:10px;
+    overflow:hidden;
+  }
+  .ba-box.before{border-color:var(--red);}
+  .ba-box.after{border-color:var(--green);}
+  .ba-label{
+    padding:8px 14px; font-size:0.8rem; font-weight:700; letter-spacing:0.03em;
+    text-transform:uppercase;
+  }
+  .ba-box.before .ba-label{background:rgba(248,81,73,0.14); color:var(--red);}
+  .ba-box.after .ba-label{background:rgba(63,185,80,0.14); color:var(--green);}
+  .resolve-bar{
+    margin:12px 14px; padding:10px 12px; background:#0d1117;
+    border:1px solid var(--border); border-radius:6px;
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:0.8rem; color:var(--text);
+  }
+  .ba-box.before .resolve-bar{color:var(--red);}
+  .ba-box.after .resolve-bar{color:var(--green);}
+  .ba-box table{font-size:0.82rem; margin:0 14px 14px; width:calc(100% - 28px);}
+  .ba-box.before table{width:auto; margin:0 14px 14px;}
+  .empty-row{color:var(--sub); font-style:italic; padding:10px 12px;}
+  .add-btn{
+    display:inline-block; background:rgba(88,166,255,0.12); color:var(--accent);
+    border:1px solid var(--accent); border-radius:6px; padding:3px 9px;
+    font-size:0.76rem;
+  }
+
+  /* facts list */
+  .fact-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:10px;}
+  .fact-list li{
+    background:var(--card); border:1px solid var(--border); border-radius:8px;
+    padding:12px 14px; font-size:0.9rem;
+  }
+  .fact-list li.load-bearing{border-color:var(--orange); background:rgba(210,153,34,0.06);}
+  .fact-list .fact-head{display:flex; align-items:center; gap:8px; margin-bottom:4px;}
+  .fact-list b{color:var(--text);}
+  .fact-list .evidence{color:var(--sub); font-size:0.85rem;}
+  .badge{
+    display:inline-block; background:var(--orange); color:#0d1117;
+    font-size:0.7rem; font-weight:700; padding:2px 8px; border-radius:20px;
+    letter-spacing:0.02em; flex-shrink:0;
+  }
+
+  /* decision cards */
+  .decision-grid{display:flex; flex-direction:column; gap:10px;}
+  .decision-card{
+    background:var(--card); border:1px solid var(--border); border-radius:8px;
+    padding:12px 14px; display:grid; grid-template-columns:44px 1fr; gap:12px; align-items:start;
+  }
+  .decision-num{
+    display:flex; align-items:center; justify-content:center;
+    background:#0d1117; border:1px solid var(--accent); color:var(--accent);
+    border-radius:6px; font-size:0.78rem; font-weight:700; height:28px;
+  }
+  .decision-card .d-text{font-size:0.9rem;}
+  .decision-card .d-reason{color:var(--sub); font-size:0.82rem; margin-top:4px;}
+
+  ul.plain{margin:0; padding-left:20px; color:var(--sub); font-size:0.9rem;}
+  ul.plain li{margin-bottom:6px;}
+
+  .safety-box{
+    background:var(--card); border:1px solid var(--orange); border-radius:10px;
+    padding:16px 18px;
+  }
+  .safety-box ul{margin:0; padding-left:20px; font-size:0.92rem;}
+  .safety-box li{margin-bottom:8px;}
+  .safety-box b{color:var(--orange);}
+
+  .test-box{
+    background:var(--card); border:1px solid var(--accent); border-radius:10px;
+    padding:16px 18px;
+  }
+  .test-box ul{margin:0; padding-left:20px; font-size:0.92rem;}
+  .test-box li{margin-bottom:8px;}
+  .test-box b{color:var(--accent);}
+
+  .confirm-box{
+    margin-top:48px; text-align:center; padding:20px;
+    border-top:1px solid var(--border); color:var(--sub); font-size:0.9rem;
+  }
+
+  @media (max-width:720px){
+    .problem-grid, .ba-grid, .decision-card{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <h1>แผนงาน — เพิ่มโมเดล safetensors (vLLM) จาก Hugging Face</h1>
+    <div class="subtitle">แผนรอ confirm ก่อนลงโค้ด · 2026-09-01 · ต่อจากเฟส 1.5</div>
+  </header>
+
+  <section>
+    <h2><span class="step-num">1</span> ปัญหา</h2>
+    <div class="problem-grid">
+      <div class="card">
+        <div class="icon">🚫</div>
+        <strong>อาการ</strong>
+        <p>วาง <code>Qwen/Qwen3-8B-FP8</code> ในช่อง "เพิ่มโมเดล" แล้วหน้าเว็บขึ้น <code>arch: ไม่ทราบ · ctx_train: -</code> และ "ไม่พบ quant ในรีโปนี้" — ดูเหมือนพัง แต่จริง ๆ คือยังไม่รองรับ</p>
+      </div>
+      <div class="card">
+        <div class="icon">🧭</div>
+        <strong>สาเหตุ (บรรทัดเดียว)</strong>
+        <p>เส้นทาง "เพิ่มโมเดล" เป็น <b style="color:var(--orange);">GGUF-only ทั้งเส้น</b> — <code>hf.group_quants()</code> ข้ามไฟล์ที่ไม่ลงท้าย <code>.gguf</code>, arch/ctx อ่านจาก GGUF header เท่านั้น, engine ถูกตรึงเป็น <code>llamacpp</code></p>
+        <div class="example">
+          เครื่องนี้มี vLLM เป็น engine อยู่แล้ว (catalog มี entry <code>qwen38-nvfp4-vllm</code>) แต่ต้องให้ vendor เขียน entry มือเท่านั้น ผู้ใช้เพิ่มเองไม่ได้
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="step-num">2</span> ก่อน / หลัง — ผลของ resolve เมื่อวาง repo safetensors</h2>
+    <div class="ba-grid">
+      <div class="ba-box before">
+        <div class="ba-label">❌ ก่อนแก้</div>
+        <div class="resolve-bar">arch: ไม่ทราบ · ctx_train: -</div>
+        <table>
+          <tr><th>quant</th><th>ไฟล์</th><th>ขนาด</th></tr>
+          <tr><td colspan="3" class="empty-row">ไม่พบ quant ในรีโปนี้</td></tr>
+        </table>
+      </div>
+      <div class="ba-box after">
+        <div class="ba-label">✅ หลังแก้</div>
+        <div class="resolve-bar">arch: Qwen3ForCausalLM · ctx_train: 40960 · engine: vllm · format: safetensors</div>
+        <table>
+          <tr><th>quant</th><th>ไฟล์</th><th>ขนาดรวม</th><th>แรม</th><th>สถานะ</th><th></th></tr>
+          <tr>
+            <td>FP8</td><td>9 ไฟล์</td><td>9.4 GB</td>
+            <td class="status-ok">✅ พอ</td><td class="status-ok">✅ พร้อมใช้</td>
+            <td><span class="add-btn">➕ เพิ่มเข้าคลัง</span></td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="step-num">3</span> ข้อเท็จจริงที่ verify แล้ว</h2>
+    <ul class="fact-list">
+      <li>
+        <div class="fact-head"><b>1. โครงสร้าง repo จริง</b></div>
+        <div class="evidence"><code>Qwen/Qwen3-8B-FP8</code> = safetensors ล้วน 12 ไฟล์ 9.45 GB ไม่มี <code>.gguf</code> เลย (HF API <code>?blobs=true</code>)</div>
+      </li>
+      <li>
+        <div class="fact-head"><b>2. config.json มีทุกอย่างที่ต้องใช้</b></div>
+        <div class="evidence"><code>architectures: ["Qwen3ForCausalLM"]</code> · <code>model_type: qwen3</code> · <code>max_position_embeddings: 40960</code> · <code>quantization_config.quant_method: fp8</code></div>
+      </li>
+      <li class="load-bearing">
+        <div class="fact-head"><span class="badge">Load-bearing</span> <b>3. max_position_embeddings อาจซ้อนใน text_config</b></div>
+        <div class="evidence">โมเดล NVFP4 ที่รันอยู่บนเครื่องจริง (<code>~/models/nvfp4/qwen3.8-27b-nvfp4/config.json</code>) มีค่าอยู่ที่ <code>text_config.max_position_embeddings = 262144</code> ไม่ใช่ระดับบนสุด ⇒ parser ต้องดูทั้งสองชั้น</div>
+      </li>
+      <li class="load-bearing">
+        <div class="fact-head"><span class="badge">Load-bearing</span> <b>4. รายการไฟล์ตรงกับที่ vendor curate ไว้เป๊ะ</b></div>
+        <div class="evidence">ไฟล์ที่ vendor curate ไว้ใน <code>catalog.yaml:106-117</code> = ไฟล์ทั้ง repo ยกเว้น <code>.gitattributes</code> และ <code>README.md</code> — เทียบกับ HF API ของ <code>unsloth/Qwen3.8-27B-NVFP4</code> แล้วตรงกันเป๊ะ ⇒ ใช้กติกาจัดกลุ่มนี้ได้เลย</div>
+      </li>
+      <li>
+        <div class="fact-head"><b>5. ไฟล์ MTP ตรวจได้ก่อนดาวน์โหลด</b></div>
+        <div class="evidence">โมเดลที่มี MTP มีไฟล์ <code>model_mtp.safetensors</code> จริงในโฟลเดอร์ (NVFP4 มี · FP8 ไม่มี) ⇒ ตรวจ MTP จากรายชื่อไฟล์ได้ก่อนดาวน์โหลด</div>
+      </li>
+      <li>
+        <div class="fact-head"><b>6. ฮาร์ดแวร์รองรับ FP8</b></div>
+        <div class="evidence">เครื่องเป็น GB10 compute capability 12.1 (Blackwell) — FP8 e4m3 รองรับในระดับฮาร์ดแวร์</div>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="step-num">4</span> การตัดสินใจสำคัญ</h2>
+    <div class="decision-grid">
+      <div class="decision-card">
+        <div class="decision-num">#1</div>
+        <div>
+          <div class="d-text"><b style="color:var(--accent);">config.json คือแหล่งของ arch/ctx ของ safetensors</b> — ยิง <code>.../resolve/main/config.json</code> ตรง ๆ · parser อ่าน <code>architectures[0]</code>, <code>model_type</code>, <code>max_position_embeddings</code> ทั้งระดับบนสุดและใน <code>text_config</code></div>
+          <div class="d-reason">เป็นแหล่งเดียวที่มีข้อมูลจริง · การซ้อนใน text_config เจอจริงกับโมเดลที่รันอยู่ (ข้อเท็จจริง #3)</div>
+        </div>
+      </div>
+      <div class="decision-card">
+        <div class="decision-num">#2·3</div>
+        <div>
+          <div class="d-text"><b style="color:var(--accent);">1 repo safetensors = 1 quant group</b> · key มาจาก <code>quantization_config.quant_method</code> (ไม่มีก็ใช้ <code>BF16</code>) · ไฟล์ที่รวม = ทุกไฟล์ ยกเว้น <code>.gitattributes</code>, <code>README.md</code>, <code>LICENSE*</code>, <code>*.md</code>, ไฟล์ภาพ</div>
+          <div class="d-reason">root-level repo ไม่มีทั้งโฟลเดอร์ย่อยและ token quant ในชื่อไฟล์ · กติกาการคัดไฟล์ตรงกับที่ vendor curate ไว้เอง (ข้อเท็จจริง #4)</div>
+        </div>
+      </div>
+      <div class="decision-card">
+        <div class="decision-num">#4</div>
+        <div>
+          <div class="d-text"><b style="color:var(--accent);">model_mtp.safetensors ต้องอยู่ในกลุ่มหลัก</b> ห้ามถูกจับเป็น companion</div>
+          <div class="d-reason"><code>companion_kind()</code> เห็นคำว่า mtp แล้วจะแยกออกเป็น draft ซึ่งเป็นกติกาของ llama.cpp (<code>-md</code>) · vLLM ต้องการไฟล์นี้อยู่ในโฟลเดอร์โมเดล</div>
+        </div>
+      </div>
+      <div class="decision-card">
+        <div class="decision-num">#7</div>
+        <div>
+          <div class="d-text"><b style="color:var(--accent);">เพิ่มฟิลด์ใหม่ตัวเดียว</b>: <code>ModelEntry.engine_env: dict[str, str] | None</code> — main.py เอาไป <code>env.update()</code> ก่อนเรียก engine script</div>
+          <div class="d-reason"><code>ModelEntry</code> เป็น <code>extra="forbid"</code> เพิ่ม field ไม่ได้ถ้าไม่ประกาศ · ตัวเดียวครอบคลุมทั้ง parser/MTP และรองรับ engine อื่นในอนาคต ไม่ต้องเพิ่ม field รายตัว</div>
+        </div>
+      </div>
+      <div class="decision-card">
+        <div class="decision-num">#8·9</div>
+        <div>
+          <div class="d-text"><b style="color:var(--accent);">engines/vllm.sh สร้าง flag ตาม env แบบมีเงื่อนไข</b> — ใช้ <code>${VAR-default}</code> (ไม่มี colon) เพื่อแยก "ไม่ได้ตั้ง" กับ "ตั้งเป็นค่าว่างเพื่อปิด" · default ของ MTP ยังคง "เปิด" ตามเดิม (<code>${VLLM_SPECULATIVE-mtp}</code>)</div>
+          <div class="d-reason">แก้จุดอ่อน 1+2 พร้อมกัน โดยไม่พึ่งสมมติฐานที่ยังไม่ verify ว่า argparse ของ vLLM ให้ flag ท้ายชนะ · พี่หนุ่มเลือกไม่แตะพฤติกรรมของโมเดล NVFP4 ที่ใช้งานได้อยู่ — ห้ามใช้ <code>${VAR:-default}</code> เด็ดขาด</div>
+        </div>
+      </div>
+      <div class="decision-card">
+        <div class="decision-num">#10</div>
+        <div>
+          <div class="d-text"><b style="color:var(--accent);">เลือก tool-call parser ตาม model_type ด้วยตารางแม็ป</b> (qwen3/qwen3_5, llama, mistral, deepseek_v3) · ตระกูลที่ไม่รู้จัก = <b style="color:var(--red);">ไม่ใส่ parser เลย</b></div>
+          <div class="d-reason">พี่หนุ่มเลือก "รองรับทุกตระกูล" · เดา parser ผิดอันตรายกว่าไม่ใส่ เพราะ request ที่มี tools จะ 400/500 ทั้งหมด</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="step-num">5</span> จุดอ่อนของเดิมที่แก้ไปด้วย</h2>
+    <div class="table-scroll">
+      <table>
+        <tr><th style="width:6%">#</th><th>อาการ</th><th>ที่มา</th></tr>
+        <tr>
+          <td>1</td>
+          <td><code>--speculative-config mtp</code> ใส่ทุกโมเดลแบบตายตัว — โมเดลที่ไม่มี MTP head จะโหลดไม่ขึ้น</td>
+          <td><code>engines/vllm.sh:38</code></td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><code>ctx</code> ที่ UI ส่งมาถูกเมิน — vllm ตรึง <code>--max-model-len 32768</code></td>
+          <td><code>engines/vllm.sh:39</code> · <code>main.py:807</code> ตั้ง env CTX ไว้แต่ไม่มีใครอ่าน</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><code>is_ready()</code> ของโมเดลแบบโฟลเดอร์เช็คแค่ "โฟลเดอร์ไม่ว่าง" — ดาวน์โหลดค้างกลางทางก็ขึ้นว่าพร้อม แล้ว activate พัง</td>
+          <td><code>server/catalog.py:212-214</code></td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="step-num">6</span> ไฟล์ที่แก้</h2>
+    <div class="table-scroll">
+      <table>
+        <tr><th>ไฟล์</th><th>สิ่งที่ทำ</th><th>ประมาณการ</th></tr>
+        <tr>
+          <td><code>server/hf.py</code></td>
+          <td>เพิ่ม <code>fetch_config()</code>, <code>group_weights()</code>, ฟิลด์ <code>format</code> ใน <code>QuantGroup</code>, ตารางแม็ป parser · ไม่แตะ <code>group_quants()</code> เดิม</td>
+          <td>ปานกลาง</td>
+        </tr>
+        <tr>
+          <td><code>server/main.py</code></td>
+          <td>resolve แยกสองทาง · response เพิ่ม <code>engine</code>/<code>format</code>/<code>requires</code>/<code>engine_env</code> · <code>env.update(entry.engine_env)</code> ตอน activate</td>
+          <td>ปานกลาง</td>
+        </tr>
+        <tr>
+          <td><code>server/catalog.py</code></td>
+          <td>ฟิลด์ <code>engine_env</code> ใน <code>ModelEntry</code> · <code>is_ready()</code> folder เข้มขึ้น</td>
+          <td>เล็ก</td>
+        </tr>
+        <tr>
+          <td><code>engines/vllm.sh</code></td>
+          <td>flag แบบมีเงื่อนไขจาก env + <code>--max-model-len</code> จาก CTX</td>
+          <td>เล็ก</td>
+        </tr>
+        <tr>
+          <td><code>server/static/index.html</code></td>
+          <td>payload builder แยกตาม <code>format</code> · carry <code>requires</code>/<code>engine_env</code> · แสดง format/engine ในตาราง · เตือนเมื่อไม่มี parser · แก้บั๊ก <code>resolveRepoId</code></td>
+          <td>ปานกลาง</td>
+        </tr>
+        <tr>
+          <td><code>tests/</code> + <code>tests/fixtures/</code></td>
+          <td>fixture safetensors ใหม่ + test ตามหัวข้อทดสอบ</td>
+          <td>ปานกลาง</td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="step-num">7</span> ทดสอบแค่ไหน</h2>
+    <div class="test-box">
+      <ul>
+        <li><b>unit test + regression ของเส้นทาง GGUF เดิมต้องผ่านครบ</b> — ไม่แตะ <code>group_quants()</code> เดิม repo GGUF ต้องตอบเหมือนเดิมเป๊ะ</li>
+        <li><b>ทดสอบจริงถึงหน้า resolve เท่านั้น</b> — ยิง resolve จริงกับ repo safetensors จริง ยืนยัน arch/ctx/format/engine ที่ได้</li>
+        <li><b style="color:var(--red);">ยังไม่ดาวน์โหลด/activate จริง</b> — เพราะกระทบพอร์ต <code>:8000</code> และ llama.cpp ที่ลูกค้าใช้งานอยู่จริงบน <code>:8001</code></li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="step-num">8</span> ความเสี่ยงที่ยังเหลือ</h2>
+    <div class="safety-box">
+      <ul>
+        <li>ยังไม่ได้พิสูจน์ว่า vLLM 26.07 บน GB10 รัน FP8 block-quant (<code>weight_block_size [128,128]</code>) ได้จริง — ฮาร์ดแวร์รองรับ แต่ต้องทดสอบตอน activate จริงในงานถัดไป</li>
+        <li>ตารางแม็ป parser ครอบคลุมเท่าที่รู้ ณ วันนี้ ตระกูลใหม่ต้องมาเติมเอง</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="confirm-box">
+    ขั้นถัดไป: รอพี่หนุ่ม confirm → implement → deploy (ขออนุญาตแยก)
+  </div>
+
+</div>
+
+</body>
+</html>

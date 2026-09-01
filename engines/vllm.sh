@@ -28,14 +28,33 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "build image $IMAGE (base + xgrammar fix สำหรับ tool calling)..."
   docker build -q -t "$IMAGE" "$(dirname "$0")/vllm-image" >/dev/null 2>&1 || { echo "⚠️ build ไม่สำเร็จ — ใช้ image ดิบ (tool calling ใช้ไม่ได้)"; IMAGE="nvcr.io/nvidia/vllm:26.07-py3"; }
 fi
+
+# flag ตาม env: ใช้ "${VAR-default}" (ไม่มี ":") ไม่ใช่ "${VAR:-default}" — ห้ามพลาดจุดนี้
+#   ":-" มองค่าว่าง ("") เหมือน "ไม่ได้ตั้ง" แล้วเอา default มาแทน ⇒ ปิด parser/MTP ไม่ได้เลยเพราะ
+#   "-" เท่านั้นที่แยก "ไม่ได้ตั้ง env" (unset → ใช้ default เดิม) ออกจาก "ตั้งเป็นค่าว่างเพื่อปิดชัดเจน"
+TOOL_PARSER="${VLLM_TOOL_PARSER-qwen3_xml}"
+REASONING_PARSER="${VLLM_REASONING_PARSER-qwen3}"
+SPECULATIVE="${VLLM_SPECULATIVE-mtp}"   # default เปิด (mtp) ตามเดิม — โมเดลที่ไม่มี MTP head ต้องสั่งปิดเองผ่าน engine_env
+
+# สร้าง flag array ก่อน docker run — ห้ามเขียน "[ -n "$X" ] && ARR+=(...)" เดี่ยว ๆ เพราะสคริปต์รัน
+# ด้วย set -e: ถ้าเงื่อนไขเป็นเท็จ "&&" คืน exit code 1 แล้วสคริปต์ตายทั้งสายทันที ต้องใช้ if/then เท่านั้น
+EXTRA_FLAGS=()
+if [ -n "$TOOL_PARSER" ]; then
+  EXTRA_FLAGS+=(--enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER")
+fi
+if [ -n "$REASONING_PARSER" ]; then
+  EXTRA_FLAGS+=(--reasoning-parser "$REASONING_PARSER")
+fi
+if [ "$SPECULATIVE" = "mtp" ]; then
+  EXTRA_FLAGS+=(--speculative-config '{"method":"mtp","num_speculative_tokens":3}')
+fi
+
 docker run -d --name aiserver-vllm --gpus all --ipc=host \
   -p 8000:8000 -v "$(dirname "$MODEL_DIR")":/models \
   "$IMAGE" \
   vllm serve "/models/$(basename "$MODEL_DIR")" \
   --served-model-name "${MODEL_ID:-$(basename "$MODEL_DIR")}" auto \
-  --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_PARSER:-qwen3_xml}" \
-  --reasoning-parser "${VLLM_REASONING_PARSER:-qwen3}" \
-  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
-  --max-num-seqs 4 --gpu-memory-utilization 0.55 --max-model-len 32768 "$@" \
+  "${EXTRA_FLAGS[@]}" \
+  --max-num-seqs 4 --gpu-memory-utilization 0.55 --max-model-len "${CTX:-32768}" "$@" \
   > "$LOG_DIR/vllm.log" 2>&1
 WAIT_CONTAINER=aiserver-vllm wait_health 600

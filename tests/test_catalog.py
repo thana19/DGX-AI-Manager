@@ -165,6 +165,40 @@ models:
 
 
 # ---------------------------------------------------------------------------
+# ModelEntry.engine_env — carry parser/MTP config ไปให้ activate() ยัดเข้า subprocess env
+# (extra="forbid" ⇒ field ที่ไม่ประกาศจะถูกปฏิเสธตั้งแต่ parse ต้องมี test ยืนยันว่ารับได้จริง)
+# ---------------------------------------------------------------------------
+
+
+def test_model_entry_accepts_engine_env():
+    entry = _entry(engine_env={"VLLM_TOOL_PARSER": "qwen3_xml", "VLLM_SPECULATIVE": ""})
+    assert entry.engine_env == {"VLLM_TOOL_PARSER": "qwen3_xml", "VLLM_SPECULATIVE": ""}
+
+
+def test_model_entry_engine_env_defaults_to_none():
+    entry = _entry()
+    assert entry.engine_env is None
+
+
+def test_add_user_model_engine_env_round_trips(tmp_path):
+    path = str(tmp_path / "user-models.json")
+    add_user_model(
+        {
+            "id": "vllm-with-env", "name": "vLLM model", "engine": "vllm", "path": "~/models/fp8/x",
+            "engine_env": {"VLLM_TOOL_PARSER": "", "VLLM_SPECULATIVE": ""},
+        },
+        path=path,
+    )
+
+    loaded = load_user(path)
+    assert len(loaded) == 1
+    assert loaded[0].engine_env == {"VLLM_TOOL_PARSER": "", "VLLM_SPECULATIVE": ""}
+
+    raw = json.loads((tmp_path / "user-models.json").read_text(encoding="utf-8"))
+    assert raw[0]["engine_env"] == {"VLLM_TOOL_PARSER": "", "VLLM_SPECULATIVE": ""}
+
+
+# ---------------------------------------------------------------------------
 # add_user_model / remove_user_model — เขียนเฉพาะ user-models.json แบบ atomic
 # ต้องไม่แตะ ~/.aiserver2 จริงระหว่างเทส ⇒ override ด้วย AISERVER2_STATE + tmp_path
 # ---------------------------------------------------------------------------
@@ -329,6 +363,53 @@ def test_is_ready_folder_engine_missing_dir(tmp_path):
     d = tmp_path / "does-not-exist"
     entry = _entry(engine="vllm", path=str(d), args="")
     assert is_ready(entry) is False
+
+
+def test_is_ready_folder_engine_aria2_marker_anywhere_in_tree_means_not_ready(tmp_path):
+    d = tmp_path / "vllm-model"
+    d.mkdir()
+    _touch(d / "config.json")
+    _touch(d / "model.safetensors.aria2")  # ดาวน์โหลดค้างกลางทาง
+    entry = _entry(engine="vllm", path=str(d), args="")
+    assert is_ready(entry) is False
+
+
+def test_is_ready_folder_engine_aria2_marker_in_subdir_means_not_ready(tmp_path):
+    d = tmp_path / "vllm-model"
+    (d / "sub").mkdir(parents=True)
+    _touch(d / "config.json")
+    _touch(d / "sub" / "x.safetensors.aria2")
+    entry = _entry(engine="vllm", path=str(d), args="")
+    assert is_ready(entry) is False
+
+
+def test_is_ready_folder_engine_dl_basename_missing_means_not_ready(tmp_path):
+    d = tmp_path / "vllm-model"
+    d.mkdir()
+    _touch(d / "config.json")
+    entry = _entry(
+        engine="vllm", path=str(d), args="",
+        dl=[
+            "https://huggingface.co/org/repo/resolve/main/config.json",
+            "https://huggingface.co/org/repo/resolve/main/model.safetensors",
+        ],
+    )
+    assert is_ready(entry) is False  # model.safetensors ยังไม่มี
+
+
+def test_is_ready_folder_engine_dl_basenames_all_present_means_ready(tmp_path):
+    d = tmp_path / "vllm-model"
+    d.mkdir()
+    _touch(d / "config.json")
+    _touch(d / "model.safetensors")
+    entry = _entry(
+        engine="vllm", path=str(d), args="",
+        dl=[
+            "https://huggingface.co/org/repo/resolve/main/config.json",
+            "https://huggingface.co/org/repo/resolve/main/model.safetensors",
+        ],
+    )
+    assert is_ready(entry) is True
 
 
 def test_disk_bytes_sharded_sums_all_shards(tmp_path):

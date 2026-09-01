@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 import httpx
 import pytest
@@ -345,6 +346,107 @@ def test_resolve_full_hf_link_with_query_string_resolves_normally(client, monkey
     assert len(body["quants"]) > 0
 
 
+def test_resolve_gguf_response_shape_unchanged_plus_new_keys(client, monkeypatch):
+    """เส้นทาง GGUF ต้องตอบเหมือนเดิมทุกประการ บวก engine/format/requires/engine_env ใหม่"""
+    repo_json = _load_fixture("hf_qwen38-27b-gguf_blobs.json")
+
+    def fake_fetch_repo(repo_id, *, token=None, client=None):
+        return repo_json
+
+    def fake_fetch_header(url, **kwargs):
+        return gguf.GgufInfo(
+            arch="qwen35", context_length=262144, name="Qwen3.8-27B", size_label="27B",
+            file_type=None, version=3, tensor_count=1, kv_count=1, kv_read=1,
+        ), None
+
+    monkeypatch.setattr(hf, "fetch_repo", fake_fetch_repo)
+    monkeypatch.setattr(gguf, "fetch_header", fake_fetch_header)
+
+    resp = client.post("/api/models/resolve", json={"repo_id": "unsloth/Qwen3.8-27B-GGUF", "token": None})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["format"] == "gguf"
+    assert body["engine"] == "llamacpp"
+    assert body["requires"] is None
+    assert body["engine_env"] is None
+    assert len(body["quants"]) > 1
+
+
+def test_resolve_safetensors_fp8_returns_vllm_engine(client, monkeypatch):
+    repo_json = _load_fixture("hf_qwen3-8b-fp8_blobs.json")
+    config = _load_fixture("config_qwen3_fp8.json")
+
+    def fake_fetch_repo(repo_id, *, token=None, client=None):
+        assert repo_id == "Qwen/Qwen3-8B-FP8"
+        return repo_json
+
+    def fake_fetch_config(repo_id, *, token=None, client=None):
+        assert repo_id == "Qwen/Qwen3-8B-FP8"
+        return config
+
+    def fake_detect(name: str) -> engines.EngineInfo:
+        if name == "vllm":
+            return engines.EngineInfo(
+                name="vllm", installed=True, version="aiserver-vllm:26.07",
+                build=None, archs=frozenset(), detail="fake vllm installed",
+            )
+        return engines.EngineInfo(name=name, installed=False, version=None, build=None, archs=frozenset(), detail="no")
+
+    monkeypatch.setattr(hf, "fetch_repo", fake_fetch_repo)
+    monkeypatch.setattr(hf, "fetch_config", fake_fetch_config)
+    monkeypatch.setattr(engines, "detect", fake_detect)
+
+    resp = client.post("/api/models/resolve", json={"repo_id": "Qwen/Qwen3-8B-FP8", "token": None})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["resolved_repo_id"] == "Qwen/Qwen3-8B-FP8"
+    assert body["format"] == "safetensors"
+    assert body["engine"] == "vllm"
+    assert body["arch"] == "Qwen3ForCausalLM"
+    assert body["ctx_train"] == 40960
+    assert body["companions"] == []
+
+    assert len(body["quants"]) == 1
+    q = body["quants"][0]
+    assert q["key"] == "FP8"
+    assert q["compat"]["status"] == "ok"  # requires.vllm_image ตรงกับ info.version พอดี (PRD ข้อ 6)
+
+    assert body["requires"] == {"vllm_image": "aiserver-vllm:26.07"}
+    assert body["engine_env"]["VLLM_TOOL_PARSER"] == "qwen3_xml"
+    assert body["engine_env"]["VLLM_REASONING_PARSER"] == "qwen3"
+    assert body["engine_env"]["VLLM_SPECULATIVE"] == ""  # Qwen3-8B-FP8 ไม่มี model_mtp.safetensors
+
+
+def test_resolve_safetensors_config_fetch_failure_degrades_gracefully(client, monkeypatch):
+    """config.json อ่านไม่ได้ (network พัง/parse พัง) → arch/ctx เป็น None ไม่ใช่ 500"""
+    repo_json = _load_fixture("hf_qwen3-8b-fp8_blobs.json")
+
+    def fake_fetch_repo(repo_id, *, token=None, client=None):
+        return repo_json
+
+    def fake_fetch_config(repo_id, *, token=None, client=None):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("GET", "http://x"))
+
+    def fake_detect(name: str) -> engines.EngineInfo:
+        return engines.EngineInfo(name=name, installed=False, version=None, build=None, archs=frozenset(), detail="no")
+
+    monkeypatch.setattr(hf, "fetch_repo", fake_fetch_repo)
+    monkeypatch.setattr(hf, "fetch_config", fake_fetch_config)
+    monkeypatch.setattr(engines, "detect", fake_detect)
+
+    resp = client.post("/api/models/resolve", json={"repo_id": "Qwen/Qwen3-8B-FP8", "token": None})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["format"] == "safetensors"
+    assert body["arch"] is None
+    assert body["ctx_train"] is None
+    assert len(body["quants"]) == 1
+    assert body["quants"][0]["key"] == "safetensors"  # ไม่มี config เลย ⇒ fallback ของ quant_label({})
+
+
 # ---------------------------------------------------------------------------
 # /api/models  (add/delete user model)
 # ---------------------------------------------------------------------------
@@ -426,6 +528,46 @@ def test_activate_rejects_needs_upgrade(client, monkeypatch, tmp_path):
 def test_activate_model_not_found_returns_404(client):
     resp = client.post("/api/activate", json={"id": "no-such-model", "port": 8001})
     assert resp.status_code == 404
+
+
+def test_activate_passes_engine_env_into_subprocess_env(client, monkeypatch, tmp_path):
+    """engine_env ของ entry (parser/MTP ของ vLLM) ต้องถูกยัดเข้า env จริงตอนเรียก engine script"""
+    model_dir = tmp_path / "vllm-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_bytes(b"{}")
+
+    entry = catalog.ModelEntry(
+        id="test-vllm-env", name="Test vLLM", engine="vllm", path=str(model_dir),
+        engine_env={"VLLM_TOOL_PARSER": "qwen3_xml", "VLLM_REASONING_PARSER": "qwen3", "VLLM_SPECULATIVE": ""},
+    )
+    monkeypatch.setattr(catalog, "load_all", lambda *a, **kw: [entry])
+
+    def fake_detect(name: str) -> engines.EngineInfo:
+        if name == "vllm":
+            return engines.EngineInfo(
+                name="vllm", installed=True, version="aiserver-vllm:26.07",
+                build=None, archs=frozenset(), detail="fake vllm installed",
+            )
+        return engines.EngineInfo(name=name, installed=False, version=None, build=None, archs=frozenset(), detail="no")
+
+    monkeypatch.setattr(engines, "detect", fake_detect)
+
+    captured: dict = {}
+
+    def fake_run(argv, env=None, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = env
+        return subprocess.CompletedProcess(argv, 0, stdout="READY\n", stderr="")
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    resp = client.post("/api/activate", json={"id": "test-vllm-env", "port": 8001})
+    assert resp.status_code == 200
+
+    env = captured["env"]
+    assert env["VLLM_TOOL_PARSER"] == "qwen3_xml"
+    assert env["VLLM_REASONING_PARSER"] == "qwen3"
+    assert env["VLLM_SPECULATIVE"] == ""
 
 
 # ---------------------------------------------------------------------------
