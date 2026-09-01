@@ -644,6 +644,87 @@ def test_stop_instance_แสดงแรมที่คืนได้(client, 
 
 
 # ---------------------------------------------------------------------------
+# /api/usage — token สะสม (tok_in/tok_out) + busy ต่อ instance จาก Prometheus /metrics
+# ---------------------------------------------------------------------------
+
+
+def test_usage_parse_ชื่อ_metric_llamacpp(client, monkeypatch):
+    fake = [
+        instances.Instance(
+            port=8001, engine="llamacpp", pid=123, model_file="m.gguf",
+            model_path="/home/dgx/models/m.gguf", ctx=262144, rss_gb=2.5, up=True,
+        ),
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: fake)
+
+    metrics_text = (
+        "# HELP llamacpp:prompt_tokens_total counter สะสม token ขาเข้า\n"
+        "# TYPE llamacpp:prompt_tokens_total counter\n"
+        "llamacpp:prompt_tokens_total 104179\n"
+        "llamacpp:tokens_predicted_total 135300\n"
+        "llamacpp:requests_processing 1\n"
+    )
+
+    def fake_get(url, timeout=None):
+        assert url == "http://127.0.0.1:8001/metrics"
+        return httpx.Response(200, text=metrics_text, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(main.httpx, "get", fake_get)
+
+    resp = client.get("/api/usage")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["usage"] == [{"port": 8001, "tok_in": 104179, "tok_out": 135300, "busy": 1}]
+    assert "t" in body
+
+
+def test_usage_parse_ชื่อ_metric_vllm_มี_label(client, monkeypatch):
+    fake = [
+        instances.Instance(
+            port=8002, engine="vllm", pid=456, model_file="m2.safetensors",
+            model_path="/home/dgx/models/m2", ctx=32768, rss_gb=10.0, up=True,
+        ),
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: fake)
+
+    metrics_text = (
+        'vllm:prompt_tokens_total{model_name="m2"} 50000\n'
+        'vllm:generation_tokens_total{model_name="m2"} 12345\n'
+        'vllm:num_requests_running{model_name="m2"} 0\n'
+    )
+
+    def fake_get(url, timeout=None):
+        return httpx.Response(200, text=metrics_text, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(main.httpx, "get", fake_get)
+
+    resp = client.get("/api/usage")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["usage"] == [{"port": 8002, "tok_in": 50000, "tok_out": 12345, "busy": 0}]
+
+
+def test_usage_metrics_fetch_พัง_ยังคืน_port_ไม่_crash(client, monkeypatch):
+    fake = [
+        instances.Instance(
+            port=8003, engine="llamacpp", pid=789, model_file="m3.gguf",
+            model_path="/home/dgx/models/m3.gguf", ctx=8192, rss_gb=1.0, up=True,
+        ),
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: fake)
+
+    def fake_get(url, timeout=None):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(main.httpx, "get", fake_get)
+
+    resp = client.get("/api/usage")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["usage"] == [{"port": 8003}]
+
+
+# ---------------------------------------------------------------------------
 # /api/endpoints — โค้ดตัวอย่างให้หน้าเว็บเอาไปสร้าง snippet ต่อกับโมเดลที่โหลดอยู่
 # ---------------------------------------------------------------------------
 

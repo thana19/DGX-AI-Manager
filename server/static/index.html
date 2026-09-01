@@ -474,6 +474,13 @@
     return Math.max(1, seconds) + " วินาที";
   }
 
+  function fmtK(n){
+    if(n === null || n === undefined || isNaN(n)) return "-";
+    n = Number(n);
+    if(Math.abs(n) >= 1000) return (n/1000).toFixed(1) + "k";
+    return String(Math.round(n));
+  }
+
   function slugify(s){
     return String(s || "")
       .toLowerCase()
@@ -522,6 +529,8 @@
     models: [],
     engines: [],
     instances: [],
+    usage: {},               // key = port → {tok_in, tok_out, busy, t, rate, lastRate}
+    usageFastPollTimer: null,
     resolveResult: null,
     resolveRepoId: "",
     downloadsTimer: null,
@@ -703,15 +712,34 @@
     var isMain = inst.port === MAIN_LLM_PORT;
     var stopClass = isMain ? "small danger" : "small";
     var metaParts = [];
-    if(inst.ctx) metaParts.push("ctx: " + escapeHtml(fmtInt(inst.ctx)));
-    metaParts.push("RSS: " + escapeHtml(fmtGB(inst.rss_gb)));
+    if(inst.ctx) metaParts.push("<span>ctx: " + escapeHtml(fmtInt(inst.ctx)) + "</span>");
+    metaParts.push("<span>RSS: " + escapeHtml(fmtGB(inst.rss_gb)) + "</span>");
+
+    var usage = state.usage[inst.port];
+    if(usage && usage.tok_in != null){
+      metaParts.push(
+        '<span title="token สะสมตั้งแต่โหลดโมเดล — พิสูจน์ว่าถูกเรียกจริง">🧮 เข้า ' +
+        fmtK(usage.tok_in) + ' / ออก ' + fmtK(usage.tok_out) + '</span>'
+      );
+      var liveRate = usage.rate > 0.5 ? usage.rate : 0;
+      if(usage.busy){
+        var displayRate = liveRate > 0 ? liveRate : usage.lastRate;
+        var rateHtml = displayRate > 0
+          ? ' <span style="color:var(--green);">⚡ ' + displayRate.toFixed(0) + ' tok/s</span>'
+          : '';
+        metaParts.push('<span style="color:var(--orange);">⏳ กำลังประมวลผล</span>' + rateHtml);
+      }else if(usage.lastRate > 0){
+        metaParts.push('<span>· <span style="color:var(--green);">⚡ ล่าสุด ' + usage.lastRate.toFixed(0) + ' tok/s</span></span>');
+      }
+    }
+
     return (
       '<div class="card instance-row" data-port="' + escapeHtml(inst.port) + '">' +
         '<span class="instance-dot' + (inst.up ? "" : " down") + '" title="' + (inst.up ? "ตอบสนอง" : "ไม่ตอบสนอง") + '"></span>' +
         '<span class="instance-port">:' + escapeHtml(inst.port) + '</span>' +
         '<span class="instance-file">' + escapeHtml(inst.model_file || "-") + '</span>' +
         '<span class="badge badge-muted">' + escapeHtml(inst.engine) + '</span>' +
-        '<div class="instance-meta">' + metaParts.map(function(s){return "<span>"+s+"</span>";}).join("") + '</div>' +
+        '<div class="instance-meta">' + metaParts.join("") + '</div>' +
         '<div class="instance-actions">' +
           '<button class="small btn-instance-info" data-port="' + escapeHtml(inst.port) + '" title="วิธีใช้">🔌</button>' +
           '<button class="' + stopClass + ' btn-instance-stop" data-port="' + escapeHtml(inst.port) + '"' +
@@ -744,7 +772,35 @@
     });
   }
 
+  async function loadUsage(){
+    try{
+      var data = await apiFetch("/api/usage");
+      var list = data.usage || [];
+      var t = data.t;
+      list.forEach(function(u){
+        var prev = state.usage[u.port];
+        var rate = 0;
+        if(prev && prev.tok_out != null && u.tok_out != null && t > prev.t){
+          rate = Math.max(0, (u.tok_out - prev.tok_out) / (t - prev.t));
+        }
+        var lastRate = (prev && prev.lastRate) || 0;
+        if(rate > 0.5) lastRate = rate;
+        state.usage[u.port] = {
+          tok_in: (u.tok_in === undefined) ? null : u.tok_in,
+          tok_out: (u.tok_out === undefined) ? null : u.tok_out,
+          busy: u.busy,
+          t: t,
+          rate: rate,
+          lastRate: lastRate
+        };
+      });
+    }catch(e){
+      // usage เป็น best-effort เท่านั้น — ห้ามทำให้รายการ instance พัง
+    }
+  }
+
   async function loadInstances(){
+    await loadUsage();
     try{
       var data = await apiFetch("/api/instances");
       state.instances = data.instances || [];
@@ -753,6 +809,18 @@
       var statusEl = document.getElementById("instances-status");
       statusEl.style.display = "block";
       statusEl.textContent = "โหลดรายการโมเดลที่โหลดอยู่ไม่ได้: " + e.message;
+    }
+
+    if(state.usageFastPollTimer){
+      clearTimeout(state.usageFastPollTimer);
+      state.usageFastPollTimer = null;
+    }
+    var anyBusy = false;
+    for(var port in state.usage){
+      if(state.usage[port].busy){ anyBusy = true; break; }
+    }
+    if(anyBusy){
+      state.usageFastPollTimer = setTimeout(loadInstances, 3000);
     }
   }
 

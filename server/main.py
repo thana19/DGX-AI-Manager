@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import urllib.parse
 import shlex
 import subprocess
@@ -457,6 +458,64 @@ def stop_instance(port: int, req: InstanceStopReq | None = None) -> dict[str, An
                 message = f"{message} (คืนแรมไปได้ราว {freed:.0f} GB)"
 
     return {"ok": ok, "message": message}
+
+
+# ---------------------------------------------------------------------------
+# /api/usage — token สะสม (tok_in/tok_out) + busy ต่อ instance จาก Prometheus /metrics
+# ของ llama.cpp/vLLM — ยกกลไก v1 มาทั้งชุด frontend คำนวณ tok/s เอง (ดู loadUsage())
+# ---------------------------------------------------------------------------
+
+_USAGE_METRICS_TIMEOUT_SEC = 2.0
+
+_USAGE_TOK_IN_PREFIXES = ("llamacpp:prompt_tokens_total", "vllm:prompt_tokens_total")
+_USAGE_TOK_OUT_PREFIXES = ("llamacpp:tokens_predicted_total", "vllm:generation_tokens_total")
+_USAGE_BUSY_PREFIXES = ("llamacpp:requests_processing", "vllm:num_requests_running")
+
+
+def _parse_prometheus_int(line: str) -> int | None:
+    """ดึงตัวเลขท้ายบรรทัด Prometheus text — รองรับทั้ง `name value` (llama.cpp)
+    และ `name{labels} value` (vLLM มี label ต่อท้ายชื่อ token สุดท้ายก็ยังใช้ได้)
+    """
+    try:
+        return int(float(line.split()[-1]))
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_usage_metrics(text: str) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(_USAGE_TOK_IN_PREFIXES):
+            value = _parse_prometheus_int(line)
+            if value is not None:
+                result["tok_in"] = value
+        elif line.startswith(_USAGE_TOK_OUT_PREFIXES):
+            value = _parse_prometheus_int(line)
+            if value is not None:
+                result["tok_out"] = value
+        elif line.startswith(_USAGE_BUSY_PREFIXES):
+            value = _parse_prometheus_int(line)
+            if value is not None:
+                result["busy"] = value
+    return result
+
+
+@app.get("/api/usage")
+def get_usage() -> dict[str, Any]:
+    usage: list[dict[str, Any]] = []
+    for inst in instances.scan():
+        entry: dict[str, Any] = {"port": inst.port}
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{inst.port}/metrics", timeout=_USAGE_METRICS_TIMEOUT_SEC)
+            resp.raise_for_status()
+            entry.update(_parse_usage_metrics(resp.text))
+        except httpx.HTTPError:
+            pass  # metrics ต่อไม่ได้ (engine ไม่เปิด --metrics ฯลฯ) — คืน entry ที่มีแค่ port ต่อไป
+        usage.append(entry)
+    return {"usage": usage, "t": time.time()}
 
 
 # ---------------------------------------------------------------------------
