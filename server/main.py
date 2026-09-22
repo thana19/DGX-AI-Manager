@@ -59,7 +59,7 @@ def _build_download_manager() -> downloads.DownloadManager:
     url = os.environ.get("ARIA2_RPC_URL", "http://127.0.0.1:6800/jsonrpc")
     secret = os.environ.get("ARIA2_RPC_SECRET", "")
     aria2 = downloads.Aria2Client(url, secret)
-    return downloads.DownloadManager(aria2)
+    return downloads.DownloadManager(aria2, token_loader=hf.load_token)
 
 
 def get_download_manager() -> downloads.DownloadManager:
@@ -273,6 +273,11 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
     except hf.RepoNotFoundError:
         return _resolve_suggestions_response(req, query, suggest_message)
 
+    gated = hf.is_gated(repo_json)
+    if req.token:
+        hf.save_token(req.token)  # จำ token ไว้ใช้ตอนดาวน์โหลด (ดู task ส่วนที่ 2/3)
+    effective_token = req.token or hf.load_token()
+
     files = hf.list_files(repo_json)
     groups = hf.group_quants(files)
 
@@ -285,14 +290,17 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
         # arch เป็นสมบัติของโมเดล ไม่ใช่ของ quant — ดึง GGUF header ครั้งเดียวจากไฟล์แรกของ quant เล็กสุด
         arch: str | None = None
         ctx_train: int | None = None
+        message: str | None = None
         smallest = min(groups, key=lambda g: g.total_bytes)
         url = hf.resolve_url(resolved_id, smallest.files[0].path)
         try:
-            gguf_info, _total = gguf.fetch_header(url)
+            gguf_info, _total = gguf.fetch_header(url, token=effective_token)
             arch = gguf_info.arch
             ctx_train = gguf_info.context_length
         except Exception:
             arch, ctx_train = None, None
+            if gated and not effective_token:
+                message = "repo ติด gate — ใส่ HF token แล้วตรวจสอบใหม่ เพื่ออ่าน arch และให้ดาวน์โหลดได้"
 
         compat = engines.check_arch(arch, "llamacpp", info=llamacpp_info)
         compat_out = _compat_dict(compat)
@@ -303,14 +311,14 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
         return {
             "repo_id": req.repo_id,
             "resolved_repo_id": resolved_id,
-            "gated": False,
+            "gated": gated,
             "arch": arch,
             "ctx_train": ctx_train,
             "quants": quants,
             "companions": companions,
             "query": query,
             "suggestions": [],
-            "message": None,
+            "message": message,
             "engine": "llamacpp",
             "format": "gguf",
             "requires": None,
@@ -320,7 +328,7 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
     if hf.has_safetensors(files):
         # --- safetensors (vLLM) — arch/ctx จาก config.json ไม่ใช่ header ของไฟล์น้ำหนัก ---
         try:
-            config = hf.fetch_config(resolved_id, token=req.token)
+            config = hf.fetch_config(resolved_id, token=effective_token)
         except Exception:
             # config.json อ่านไม่ได้ (gate/404/parse พัง ฯลฯ) — degrade เป็นไม่รู้ arch/ctx แทนที่จะ 500
             config = {}
@@ -340,7 +348,7 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
         return {
             "repo_id": req.repo_id,
             "resolved_repo_id": resolved_id,
-            "gated": False,
+            "gated": gated,
             "arch": arch,
             "ctx_train": ctx_train,
             "quants": quants,
@@ -358,7 +366,7 @@ def resolve_model(req: ResolveReq) -> dict[str, Any]:
     return {
         "repo_id": req.repo_id,
         "resolved_repo_id": resolved_id,
-        "gated": False,
+        "gated": gated,
         "arch": None,
         "ctx_train": None,
         "quants": [],

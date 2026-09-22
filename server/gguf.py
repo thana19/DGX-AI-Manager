@@ -198,8 +198,13 @@ def _content_range_total(header_value: str | None) -> int | None:
         return None
 
 
-def _fetch_range(client: httpx.Client, url: str, n_bytes: int) -> tuple[GgufInfo, int | None]:
-    response = client.get(url, headers={"Range": f"bytes=0-{n_bytes - 1}"})
+def _fetch_range(
+    client: httpx.Client, url: str, n_bytes: int, *, token: str | None = None
+) -> tuple[GgufInfo, int | None]:
+    headers = {"Range": f"bytes=0-{n_bytes - 1}"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = client.get(url, headers=headers)
     response.raise_for_status()
     info = parse_header(response.content)
     total_size = _content_range_total(response.headers.get("content-range"))
@@ -212,20 +217,24 @@ def fetch_header(
     client: httpx.Client | None = None,
     first_bytes: int = 262144,
     max_bytes: int = 1048576,
+    token: str | None = None,
 ) -> tuple[GgufInfo, int | None]:
     """ดึง GGUF header ผ่าน HTTP Range แล้ว parse — คืน (GgufInfo, ขนาดไฟล์เต็มเป็น byte)
 
     ยิง Range แรก first_bytes ก่อน ถ้ายังไม่ได้ arch/context_length ครบ (buffer ไม่พอ)
     ค่อยขยายเป็น max_bytes — follow redirect เสมอ (HF 302 ไป CDN)
+
+    token: ใส่ Authorization: Bearer สำหรับ repo ที่ติด gate — httpx ตัด header นี้ทิ้งเองเมื่อ
+    302 ข้าม origin ไป CDN (เหมือนที่ hf.fetch_config ใช้อยู่แล้ว) จึงไม่รั่วไปที่อื่น
     """
     owns_client = client is None
     if client is None:
         client = httpx.Client(follow_redirects=True)
 
     try:
-        info, total_size = _fetch_range(client, url, first_bytes)
+        info, total_size = _fetch_range(client, url, first_bytes, token=token)
         if (info.arch is None or info.context_length is None) and max_bytes > first_bytes:
-            info, total_size = _fetch_range(client, url, max_bytes)
+            info, total_size = _fetch_range(client, url, max_bytes, token=token)
         return info, total_size
     finally:
         if owns_client:

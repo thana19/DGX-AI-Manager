@@ -143,6 +143,28 @@ def test_aria2client_no_token_when_no_secret():
     assert params[0] == ["http://example.com/f.gguf"]
 
 
+def test_aria2client_add_uri_includes_header_option_when_given():
+    server = FakeAria2Server()
+    client = _client(server)
+
+    client.add_uri("http://example.com/f.gguf", "/tmp/dest", "f.gguf", headers=["Authorization: Bearer tok"])
+
+    method, params = server.calls[0]
+    urls, opts = params
+    assert opts["header"] == ["Authorization: Bearer tok"]
+
+
+def test_aria2client_add_uri_omits_header_option_when_not_given():
+    server = FakeAria2Server()
+    client = _client(server)
+
+    client.add_uri("http://example.com/f.gguf", "/tmp/dest", "f.gguf")
+
+    method, params = server.calls[0]
+    urls, opts = params
+    assert "header" not in opts
+
+
 def test_aria2client_raises_on_rpc_error():
     server = FakeAria2Server()
     server.dead = True
@@ -246,6 +268,72 @@ def test_job_eta_none_when_speed_zero():
     job._current_speed_bps = 0
 
     assert job.eta_seconds is None
+
+
+# ---------------------------------------------------------------------------
+# DownloadManager._start_job — token_loader: ส่ง Authorization ให้ aria2 เฉพาะ host huggingface.co
+# (ดู task ส่วนที่ 3) — token อ่านตอน _start_job ไม่ใช่ตอน submit
+# ---------------------------------------------------------------------------
+
+
+def test_start_job_attaches_authorization_header_for_huggingface_host(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"), token_loader=lambda: "hf_tok123")
+
+    mgr.submit("model-a", [("https://huggingface.co/org/repo/resolve/main/model.gguf", str(tmp_path / "model.gguf"))])
+
+    method, params = server.calls[0]
+    urls, opts = params
+    assert opts["header"] == ["Authorization: Bearer hf_tok123"]
+
+
+def test_start_job_no_header_for_non_huggingface_host(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"), token_loader=lambda: "hf_tok123")
+
+    mgr.submit("model-a", [("https://example.com/model.gguf", str(tmp_path / "model.gguf"))])
+
+    method, params = server.calls[0]
+    urls, opts = params
+    assert "header" not in opts
+
+
+def test_start_job_no_header_when_token_loader_returns_none(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"), token_loader=lambda: None)
+
+    mgr.submit("model-a", [("https://huggingface.co/org/repo/resolve/main/model.gguf", str(tmp_path / "model.gguf"))])
+
+    method, params = server.calls[0]
+    urls, opts = params
+    assert "header" not in opts
+
+
+def test_start_job_no_header_when_no_token_loader_given(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"))
+
+    mgr.submit("model-a", [("https://huggingface.co/org/repo/resolve/main/model.gguf", str(tmp_path / "model.gguf"))])
+
+    method, params = server.calls[0]
+    urls, opts = params
+    assert "header" not in opts
+
+
+def test_start_job_attaches_header_for_huggingface_subdomain_host(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"), token_loader=lambda: "hf_tok123")
+
+    mgr.submit("model-a", [("https://cdn-lfs.huggingface.co/org/repo/model.gguf", str(tmp_path / "model.gguf"))])
+
+    method, params = server.calls[0]
+    urls, opts = params
+    assert opts["header"] == ["Authorization: Bearer hf_tok123"]
 
 
 # ---------------------------------------------------------------------------

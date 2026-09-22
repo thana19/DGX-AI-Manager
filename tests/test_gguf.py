@@ -218,6 +218,53 @@ def test_fetch_header_follows_redirect():
     assert total_size == 9828981664
 
 
+def test_fetch_header_sends_authorization_when_token_given():
+    full = _read_fixture("gguf_head_qwen35_262144.bin")
+    seen_auth = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_auth.append(request.headers.get("authorization"))
+        body = full[:262144]
+        return httpx.Response(
+            206,
+            content=body,
+            headers={"content-range": f"bytes 0-{len(body) - 1}/9828981664"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    info, _total = fetch_header(
+        "https://huggingface.co/foo/bar/resolve/main/model.gguf",
+        client=client,
+        token="s3cr3t",
+    )
+
+    assert info.arch == "qwen35"
+    assert seen_auth == ["Bearer s3cr3t"]
+
+
+def test_fetch_header_no_authorization_header_when_token_not_given():
+    full = _read_fixture("gguf_head_qwen35_262144.bin")
+    seen_auth = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_auth.append(request.headers.get("authorization"))
+        body = full[:262144]
+        return httpx.Response(
+            206,
+            content=body,
+            headers={"content-range": f"bytes 0-{len(body) - 1}/9828981664"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    info, _total = fetch_header(
+        "https://huggingface.co/foo/bar/resolve/main/model.gguf",
+        client=client,
+    )
+
+    assert info.arch == "qwen35"
+    assert seen_auth == [None]
+
+
 def test_fetch_header_creates_own_client_when_not_given(monkeypatch):
     full = _read_fixture("gguf_head_qwen35_262144.bin")
 

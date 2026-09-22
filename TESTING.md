@@ -86,3 +86,34 @@
 
 - ทดสอบ vision ผ่าน API โดยสร้างภาพ PNG วงกลมแดงขึ้นมาเอง (ไม่ได้ใช้ภาพของผู้ใช้)
 - เคย stop โมเดลของพี่หนุ่มเพื่อทดสอบ 1 ครั้ง (ขออนุญาตก่อน) แล้วโหลดกลับด้วยคำสั่งเดิมเป๊ะ
+
+## [2026-09-22 21:35] รองรับ GGUF repo ที่ไม่มี quant token ในชื่อไฟล์ + gated repo
+
+### ภาพรวม
+
+| รายการ | ผล |
+|---|---|
+| Unit test | 328/328 ผ่าน (เดิม 299 + ใหม่ 29) |
+| Bug ที่พบและแก้ | 1 ตัว (ดู `fix.md` entry `[2026-09-22 21:35]`) |
+
+### Checklist
+
+| ข้อ | สิ่งที่ทดสอบ | ผล | หลักฐาน |
+|---|---|---|---|
+| 1 | Unit test ทั้งชุด | ✅ | 328/328 ผ่าน (เดิม 299 + ใหม่ 29: group_quants fallback, is_gated, save/load token 0600, fetch_header ส่ง Authorization, aria2 add_uri header, `_start_job` ส่ง header เฉพาะ host huggingface.co, resolve endpoint gated with/without token) |
+| 2 | resolve local (TestClient, ไม่มี token) กับ repo จริง | ✅ | gated true · 2 quant · mmproj companion · message |
+| 3 | Deploy `:9001` (`bash deploy.sh`) | ✅ | health ok `2.0.0-phase1` |
+| 4 | resolve บน `:9001` ไม่มี token | ✅ | gated true · mainline 33 shard 94.5 GB fits_ram true · main 34 shard 97.3 GB · compat `unknown` (reason: อ่าน header ไม่สำเร็จ) · message ขึ้น |
+| 5 | Regression `unsloth/GLM-5.3-Flash-GGUF` บน `:9001` | ✅ | gated false · arch glm5next · ctx 1,048,576 · quant ครบ |
+| 6 | ยังไม่มีไฟล์ `~/.aiserver2/hf_token` บน DGX | ✅ | ยังไม่มีใครใส่ token — ถูกต้อง |
+
+### Deploy log
+
+| เวลา | action | result |
+|---|---|---|
+| 2026-09-22 21:30 | `bash deploy.sh` → rsync + restart `:9001` | UP |
+
+### หมายเหตุ
+
+- ยังไม่ได้ทดสอบขั้นดาวน์โหลดจริงด้วย token (ต้องใช้ token ที่ยอมรับ gate แล้ว — พี่หนุ่มจะใส่เองในช่อง UI)
+- ชุด `main` ใช้กับ llama.cpp build ปกติไม่ได้ ให้เลือก `mainline`

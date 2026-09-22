@@ -54,3 +54,50 @@
   - `POST /api/engines/upgrade` ยังไม่เคยทดสอบกับ pack จริง
 
 - **Suggested Skills**: `project-hygiene` (ก่อน git push) · `new-project-setup` (ก่อนเริ่มเฟส 2) · `remember`
+
+## [2026-09-03 15:11 → 15:58] ซ่อม 3 เรื่องที่เจอตอนใช้งานจริง
+
+session นี้ไม่ได้เพิ่มฟีเจอร์ เป็นการไล่ซ่อมปัญหาที่พี่หนุ่มเจอตอนใช้งานจริง 3 เรื่อง แก้ที่ shell script ล้วน ไม่แตะโค้ด Python จึงไม่มี test ใหม่
+
+- **สิ่งที่ทำ**:
+
+| เรื่อง | ต้นเหตุ | แก้ที่ไหน |
+|---|---|---|
+| `:9001` ไม่ขึ้นเองตอนบูตเครื่อง | crontab ของ user `dgx` บน DGX มีแต่ entry ของ hub เดิม `:9000` ไม่มีบรรทัดไหนชี้ไป `aiserver2` เลย และเครื่องไม่มี systemd unit ของ aiserver — autostart อาศัย cron อย่างเดียว | crontab บน DGX (ไม่ใช่ไฟล์ใน repo) เติม `@reboot` + watchdog รายนาที · สำรอง crontab เดิมไว้ที่ `/home/dgx/crontab.bak.20260903-1513` |
+| โหลด `qwen3-8b-fp8` ไม่ขึ้น + error โชว์เป็น hash | DeepGEMM แปลง scale-factor layout ของ FP8 block-quant บน GB10 ไม่ได้ ⇒ EngineCore ตาย · และ `docker run -d` พิมพ์แค่ container ID ทับไฟล์ log ทำให้ error ที่ผู้ใช้เห็นเป็น hash | `engines/vllm.sh` 3 จุด (ปิด DeepGEMM เป็น default · ส่ง `VLLM_*` เข้า container ด้วย `-e` · stream `docker logs -f` ลงไฟล์แทน) |
+| `aria2.log` โตถึง 17 GB | `--log-level` (ของไฟล์) เป็นคนละตัวกับ `--console-log-level` และ default เป็น debug | `services/aria2.sh` เติม `--log-level=warn` |
+
+  รายละเอียดครบทั้ง 3 เรื่องอยู่ใน `fix.md` (entry เวลา 15:15, 15:41, 15:48)
+
+- **สถานะระบบล่าสุด (2026-09-03 15:58)**:
+  - AI Server v2 `:9001` ✅ (health 200) · aria2 `:6800` ✅ · hub เดิม `:9000` ✅ (status 200)
+  - `:8000` = `qwen3-8b-fp8` โหลดอยู่ผ่าน vLLM (up) — โหลดค้างไว้จาก session นี้ตอนทดสอบ ถ้าจะโหลดโมเดลอื่นต้องหยุดตัวนี้ก่อน
+  - แรมใช้ 113 GB ว่าง 7 GB จาก 121 GB (vLLM จอง `gpu-memory-utilization 0.55`)
+  - log: `aria2.log` 0 ไบต์ · `~/.aiserver/logs/vllm.log` 119 KB (เป็น log จริงของ vLLM แล้ว)
+  - git: มี 3 ไฟล์แก้ค้างยังไม่ commit — `engines/vllm.sh` · `services/aria2.sh` · `fix.md` (commit ล่าสุด `837ac82`) · repo ยังเป็น local ไม่มี remote
+
+- **งานค้าง / ควรทำ session ถัดไป**:
+  - ยังไม่ได้ reboot เครื่องจริงเพื่อพิสูจน์ `@reboot` ของ cron ที่เพิ่งเติม (watchdog รายนาทีทดสอบแล้วว่ากู้เองได้ใน 25 วินาที เป็นตาข่ายรองอยู่)
+  - commit 3 ไฟล์ที่ค้างอยู่
+  - งานเฟสถัดไปตามเดิม — ดูรายการใน `plan.md` และหัวข้อ "สิ่งที่รู้แล้วว่ายังขาด" ของ session ก่อนหน้าในไฟล์นี้
+
+- **Suggested Skills**: `project-hygiene` (ก่อน git push) · `remember`
+
+## [2026-09-22 18:06 → 2026-09-22 21:35] รองรับ GGUF repo ไม่มี quant token + ดาวน์โหลด gated repo
+
+- **สิ่งที่ทำ**:
+  - แก้บั๊ก GGUF repo ที่ไฟล์อยู่ root ลงท้ายด้วยชื่อ variant (`main`/`mainline`) ไม่ถูกจับเป็น quant + รองรับดาวน์โหลด repo ที่ gated ด้วย HF token (ดู `fix.md` entry `[2026-09-22 21:35]`)
+  - เพิ่ม unit test 29 ตัว รวมเป็น 328/328 ผ่าน + ทดสอบ end-to-end บน `:9001` ครบ (ดู `TESTING.md` entry `[2026-09-22 21:35]`)
+  - Deploy `:9001` แล้ว
+
+- **สถานะระบบล่าสุด (2026-09-22 21:35)**:
+  - AI Server v2 `:9001` ✅ deploy งานนี้แล้ว
+  - llama.cpp build 10696 รองรับ arch `qwen4exp` ของ Qwen3.8-Flash-Next
+  - ยังไม่มีไฟล์ `~/.aiserver2/hf_token` บน DGX (ยังไม่มีใครใส่ token)
+
+- **งานค้าง / ควรทำ session ถัดไป**:
+  1. ทดสอบดาวน์โหลด `…-AD-4.27-mainline` จริงด้วย HF token (ต้องยอมรับ gate บนเว็บ HF ก่อน) แล้วดูว่า aria2 ไม่ 401 · ถ้าโหลดเสร็จลองโหลดขึ้นแรมพร้อม `--mmproj` (mmproj ไม่ถูกเพิ่มอัตโนมัติ)
+  2. ยังไม่มี UI ดู/ลบ token ที่จำไว้ (`~/.aiserver2/hf_token`) — ถ้าต้องการ ให้เพิ่ม
+  3. commit/push งานนี้ (ยังไม่ได้ commit; working tree มีของ session ก่อนค้างอยู่ด้วย: `engines/vllm.sh`, `services/aria2.sh`)
+
+- **Suggested Skills**: `project-hygiene` · `remember`

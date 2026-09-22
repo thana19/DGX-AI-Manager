@@ -15,10 +15,11 @@ import json
 import os
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -156,8 +157,11 @@ class Aria2Client:
             raise Aria2Error(msg)
         return data["result"]
 
-    def add_uri(self, url: str, dir: str, out: str) -> str:
-        return self.call("aria2.addUri", [[url], {"dir": dir, "out": out}])
+    def add_uri(self, url: str, dir: str, out: str, headers: list[str] | None = None) -> str:
+        opts: dict[str, Any] = {"dir": dir, "out": out}
+        if headers:
+            opts["header"] = headers  # aria2 RPC option "header" รับ list ของ "Name: value"
+        return self.call("aria2.addUri", [[url], opts])
 
     def tell_status(self, gid: str) -> dict:
         raw = self.call("aria2.tellStatus", [gid, _STATUS_KEYS])
@@ -229,9 +233,16 @@ def _job_from_dict(d: dict) -> DownloadJob:
 class DownloadManager:
     """คิวดาวน์โหลด — รันทีละ 1 job เท่านั้น · state persist ลง disk ทุกครั้งที่เปลี่ยน"""
 
-    def __init__(self, aria2: Aria2Client, *, state_path: str | None = None):
+    def __init__(
+        self,
+        aria2: Aria2Client,
+        *,
+        state_path: str | None = None,
+        token_loader: Callable[[], str | None] | None = None,
+    ):
         self._aria2 = aria2
         self._state_path = state_path or paths.state("downloads.json")
+        self._token_loader = token_loader
         self._jobs: dict[str, DownloadJob] = {}
         self._running_job_id: str | None = None
         self._load_state()
@@ -339,13 +350,29 @@ class DownloadManager:
             self._running_job_id = job.id
             return
 
+    def _auth_headers_for(self, url: str) -> list[str] | None:
+        """คืน ["Authorization: Bearer <token>"] เฉพาะ URL ที่ host เป็น huggingface.co (หรือ subdomain)
+        และมี token ให้ใช้ — host อื่นไม่ส่งเด็ดขาด กัน token รั่วไปที่อื่น (ดู task ส่วนที่ 3)
+        """
+        if self._token_loader is None:
+            return None
+        host = urlsplit(url).hostname or ""
+        host = host.lower()
+        if not (host == "huggingface.co" or host.endswith(".huggingface.co")):
+            return None
+        token = self._token_loader()
+        if not token:
+            return None
+        return [f"Authorization: Bearer {token}"]
+
     def _start_job(self, job: DownloadJob) -> None:
         for f in job.files:
             if f.state == DownloadState.DONE:
                 continue
             dest_dir = os.path.dirname(f.dest)
             os.makedirs(dest_dir, exist_ok=True)
-            gid = self._aria2.add_uri(f.url, dest_dir, os.path.basename(f.dest))
+            headers = self._auth_headers_for(f.url)
+            gid = self._aria2.add_uri(f.url, dest_dir, os.path.basename(f.dest), headers=headers)
             f.gid = gid
             f.state = DownloadState.ACTIVE
         job.state = summarize_state(job.files)

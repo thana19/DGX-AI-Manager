@@ -11,6 +11,7 @@ import os
 import httpx
 import pytest
 
+from server import paths
 from server.hf import (
     GatedRepoError,
     HfFile,
@@ -24,10 +25,13 @@ from server.hf import (
     group_quants,
     group_weights,
     has_safetensors,
+    is_gated,
     list_files,
+    load_token,
     normalize_repo_id,
     quant_label,
     resolve_url,
+    save_token,
     search_models,
     suggest_args,
     vllm_engine_env,
@@ -235,6 +239,112 @@ def test_group_quants_qwen38_ignores_unrecognized_gguf():
     for g in groups:
         assert all("imatrix" not in f.path for f in g.files)
         assert all("imatrix" not in f.path for f in g.companions)
+
+
+# ---------------------------------------------------------------------------
+# group_quants — Navin-Models/Qwen3.8-Flash-Next-...-AD-4.27-GGUF: ไฟล์ root ที่ไม่มี
+# quant token ท้ายชื่อเลย (ลงท้ายด้วยชื่อ variant "mainline"/"main" แทน) → ต้อง fallback
+# เป็น stem ทั้งก้อนแทนการข้ามไปเงียบ ๆ (ดู task ส่วนที่ 1)
+# ---------------------------------------------------------------------------
+
+
+def test_group_quants_navin_qwen38_falls_back_to_stem_when_no_quant_token():
+    repo_json = _load_fixture("hf_navin-qwen38-flash-next-ad427-gguf_blobs.json")
+    files = list_files(repo_json)
+    groups = group_quants(files)
+
+    assert len(groups) == 2
+
+    by_key = {g.key: g for g in groups}
+    mainline_key = "Qwen3.8-Flash-Next-Uncensored-AD-4.27-mainline"
+    main_key = "Qwen3.8-Flash-Next-Uncensored-AD-4.27-main"
+    assert set(by_key.keys()) == {mainline_key, main_key}
+
+    mainline = by_key[mainline_key]
+    main_ = by_key[main_key]
+
+    assert mainline.shard_count == 33
+    assert len(mainline.files) == 33
+    assert mainline.total_bytes == 94525395584
+
+    assert main_.shard_count == 34
+    assert len(main_.files) == 34
+    assert main_.total_bytes == 97301019488
+
+    # เรียงเล็กไปใหญ่ (ข้อ 7 เดิม) — mainline (33 shard) เล็กกว่า main (34 shard) → ต้องมาก่อน
+    assert [g.key for g in groups] == [mainline_key, main_key]
+
+
+def test_group_quants_navin_qwen38_mmproj_is_vision_companion_not_a_group():
+    repo_json = _load_fixture("hf_navin-qwen38-flash-next-ad427-gguf_blobs.json")
+    files = list_files(repo_json)
+    groups = group_quants(files)
+
+    assert all("mmproj" not in g.key.lower() for g in groups)
+
+    vision_paths = {f.path for g in groups for f in g.vision_files}
+    assert "mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf" in vision_paths
+
+
+# ---------------------------------------------------------------------------
+# is_gated
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "repo_json,expected",
+    [
+        ({"gated": "auto"}, True),
+        ({"gated": "manual"}, True),
+        ({"gated": True}, True),
+        ({"gated": False}, False),
+        ({}, False),
+    ],
+)
+def test_is_gated(repo_json, expected):
+    assert is_gated(repo_json) is expected
+
+
+# ---------------------------------------------------------------------------
+# save_token / load_token — เก็บ HF token ไว้ใช้ตอนดาวน์โหลด (ดู task ส่วนที่ 2)
+# ---------------------------------------------------------------------------
+
+
+def test_load_token_returns_none_when_no_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("AISERVER2_STATE", str(tmp_path))
+    assert load_token() is None
+
+
+def test_save_and_load_token_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("AISERVER2_STATE", str(tmp_path))
+    save_token("hf_abc123")
+    assert load_token() == "hf_abc123"
+
+
+def test_save_token_strips_whitespace(tmp_path, monkeypatch):
+    monkeypatch.setenv("AISERVER2_STATE", str(tmp_path))
+    save_token("  hf_abc123  \n")
+    assert load_token() == "hf_abc123"
+
+
+def test_save_token_writes_file_mode_0600(tmp_path, monkeypatch):
+    monkeypatch.setenv("AISERVER2_STATE", str(tmp_path))
+    save_token("hf_abc123")
+    mode = os.stat(paths.state("hf_token")).st_mode & 0o777
+    assert mode == 0o600
+
+
+def test_save_token_empty_does_not_write_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("AISERVER2_STATE", str(tmp_path))
+    save_token("")
+    assert not os.path.exists(paths.state("hf_token"))
+    assert load_token() is None
+
+
+def test_save_token_whitespace_only_does_not_write_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("AISERVER2_STATE", str(tmp_path))
+    save_token("   ")
+    assert not os.path.exists(paths.state("hf_token"))
 
 
 # ---------------------------------------------------------------------------

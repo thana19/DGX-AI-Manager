@@ -8,11 +8,15 @@
 """
 from __future__ import annotations
 
+import os
 import re
+import stat
 from dataclasses import dataclass, field
 from urllib.parse import quote, urlparse
 
 import httpx
+
+from . import paths
 
 API_BASE = "https://huggingface.co/api/models"
 RESOLVE_BASE = "https://huggingface.co"
@@ -36,6 +40,10 @@ _SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d+)-of-(?P<total>\d+)$")
 
 # ชื่อ quant ที่อยู่ในชื่อไฟล์ root (ไม่มีโฟลเดอร์ย่อย) — เอาแค่ token ท้ายสุดของ stem
 # รูปแบบที่พบจริง: UD-Q4_K_XL, UD-IQ1_M, IQ2_XXS, Q8_0, Q4_0, BF16, F16, F32
+# คำที่บอกว่าไฟล์ root นี้ไม่ใช่ quant ของจริง (ไฟล์เสริมสำหรับ debug/calibration) — ข้ามเสมอ
+# ไม่ว่า _QUANT_RE จะแมตช์ท้ายชื่อได้บังเอิญหรือเปล่าก็ตาม
+_IGNORE_KEYWORDS = ("imatrix",)
+
 _QUANT_RE = re.compile(
     r"(?:(?:UD-)?(?:IQ|Q|TQ)\d+(?:_[A-Za-z0-9]+)*"   # UD-Q4_K_XL, IQ2_XXS, Q8_0, TQ1_0
     r"|(?:MX|NV)?FP\d+(?:_[A-Za-z0-9]+)*"            # MXFP4 (gpt-oss), NVFP4, FP8
@@ -135,6 +143,41 @@ def fetch_config(repo_id: str, *, token: str | None = None, client: httpx.Client
     return resp.json()
 
 
+def is_gated(repo_json: dict) -> bool:
+    """repo นี้ติด gate ไหม — HF ส่ง "gated" มาเป็น "auto"/"manual"/True เมื่อติด, False/ไม่มี key เมื่อไม่ติด"""
+    gated = repo_json.get("gated")
+    return gated in ("auto", "manual", True)
+
+
+def token_path() -> str:
+    """path ของไฟล์เก็บ HF token — ~/.aiserver2/hf_token (หรือ AISERVER2_STATE ตอน test)"""
+    return paths.state("hf_token")
+
+
+def save_token(token: str | None) -> None:
+    """จำ HF token ไว้ใช้ตอนอ่าน header/ดาวน์โหลดครั้งถัดไป — mode 0600 (plaintext แต่จำกัดสิทธิ์อ่าน)
+
+    token ว่าง (None/"" หรือช่องว่างล้วน) → ไม่เขียนไฟล์เลย (ไม่ใช่เขียนไฟล์เปล่า)
+    """
+    cleaned = (token or "").strip()
+    if not cleaned:
+        return
+    path = token_path()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(cleaned)
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+
+
+def load_token() -> str | None:
+    """อ่าน HF token ที่จำไว้ — None ถ้ายังไม่เคยเซฟ/ไฟล์ว่าง"""
+    path = token_path()
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        token = f.read().strip()
+    return token or None
+
+
 def list_files(repo_json: dict) -> list[HfFile]:
     """แปลง siblings จาก HF API response เป็น HfFile ทั้งหมด (ยังไม่กรอง .gguf)"""
     files = []
@@ -187,6 +230,10 @@ def group_quants(files: list[HfFile]) -> list[QuantGroup]:
             companions.append(f)
             continue
 
+        if any(kw in basename.lower() for kw in _IGNORE_KEYWORDS):
+            # ไฟล์ debug/calibration (เช่น imatrix_*.gguf) — ไม่ใช่ quant ไม่ใช่ companion ข้ามไปเลย
+            continue
+
         stem = basename[: -len(".gguf")]
         base, shard_idx, shard_total = _strip_shard(stem)
 
@@ -194,13 +241,15 @@ def group_quants(files: list[HfFile]) -> list[QuantGroup]:
             # อยู่ในโฟลเดอร์ย่อย → ชื่อโฟลเดอร์คือ key เสมอ (ข้อ 2)
             key: str | None = parts[0]
         else:
-            # อยู่ที่ root → ดึงชื่อ quant จากท้ายชื่อไฟล์ (ข้อ 3)
-            key = _QUANT_RE.search(base)
-            key = key.group(0) if key else None
-
-        if key is None:
-            # ไม่ตรง pattern quant ที่รู้จัก (เช่น imatrix_*.gguf) — ข้ามไปเลย
-            continue
+            # อยู่ที่ root → ดึงชื่อ quant จากท้ายชื่อไฟล์ก่อน (ข้อ 3)
+            m = _QUANT_RE.search(base)
+            if m:
+                key = m.group(0)
+            else:
+                # ไม่เจอ quant token ท้ายชื่อ (เช่น ลงท้ายด้วยชื่อ variant "mainline"/"main"
+                # แทน quant จริง) — ใช้ stem ทั้งก้อนแทนการข้ามไปเงียบ ๆ (สอดคล้องกับกติกาข้อ 2
+                # ของโฟลเดอร์ย่อยที่ใช้ทั้งชื่อเป็น key อยู่แล้ว)
+                key = base
 
         buckets.setdefault(key, []).append((shard_idx or 0, f))
         if shard_total is not None:

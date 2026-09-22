@@ -360,7 +360,7 @@
         </div>
         <div class="field token">
           <label for="resolve-token">HF token (ถ้าจำเป็น)</label>
-          <input type="password" id="resolve-token" placeholder="สำหรับ repo แบบ gated">
+          <input type="password" id="resolve-token" placeholder="สำหรับ repo แบบ gated (จะจำไว้ใช้ตอนดาวน์โหลด)">
         </div>
         <button class="primary" id="resolve-btn">🔍 ตรวจสอบ</button>
       </div>
@@ -1339,7 +1339,10 @@
       infoParts.push("<span>format: <b>" + escapeHtml(data.format) + "</b></span>");
     }
     if(data.gated){
-      infoParts.push('<span style="color:var(--orange);">🔒 repo นี้เป็น gated — ถ้าตรวจสอบไม่ผ่าน ให้ใส่ HF token แล้วลองใหม่</span>');
+      infoParts.push('<span style="color:var(--orange);">🔒 repo นี้เป็น gated — ใส่ HF token แล้วตรวจสอบใหม่ เพื่ออ่าน arch และดาวน์โหลดได้ (token จะถูกจำไว้ในเครื่องสำหรับดาวน์โหลด)</span>');
+    }
+    if(data.message){
+      infoParts.push('<span style="color:var(--orange);">' + escapeHtml(data.message) + '</span>');
     }
     if(data.engine_env && data.engine_env.VLLM_TOOL_PARSER === ""){
       infoParts.push('<span style="color:var(--orange);">⚠️ ไม่รู้จัก parser ของตระกูลโมเดลนี้ — แชทได้ปกติ แต่ tool calling จะใช้ไม่ได้</span>');
@@ -1431,8 +1434,13 @@
     var dl = (quant.files || []).map(function(f){
       return "https://huggingface.co/" + repoId + "/resolve/main/" + f.path;
     });
+    // key แบบ fallback (stem ทั้งก้อน เช่น "Qwen3.8-…-AD-4.27-mainline") ซ้ำกับชื่อ repo อยู่แล้ว
+    // — ไม่ต่อซ้ำเป็น "…-gguf-qwen3-8-…-mainline" ใช้ตรรกะ dedupe แบบเดียวกับสาขา safetensors
+    var gslug = slugify(repoName);
+    var gquant = slugify(quant.key);
+    var gbase = gslug.replace(/-gguf$/, "");
     return {
-      id: slugify(repoName) + "-" + slugify(quant.key),
+      id: (gbase && gquant.indexOf(gbase) === 0) ? gquant : gslug + "-" + gquant,
       name: repoId + " (" + quant.key + ")",
       engine: "llamacpp",
       path: "~/models/gguf/" + repoName + "/" + firstFile,

@@ -419,6 +419,71 @@ def test_resolve_safetensors_fp8_returns_vllm_engine(client, monkeypatch):
     assert body["engine_env"]["VLLM_SPECULATIVE"] == ""  # Qwen3-8B-FP8 ไม่มี model_mtp.safetensors
 
 
+def test_resolve_gated_repo_with_token_saves_token_and_reads_header_with_it(client, monkeypatch):
+    """repo gated (Navin-Models AD-4.27) + token ที่ผู้ใช้ใส่มา → gated: True, quants 2 ตัว
+    (mainline/main — ดู task ส่วนที่ 1), fetch_header ถูกเรียกด้วย token นั้น, และ token ถูกจำไว้ใน state
+    """
+    repo_json = _load_fixture("hf_navin-qwen38-flash-next-ad427-gguf_blobs.json")
+    seen_tokens = []
+
+    def fake_fetch_repo(repo_id, *, token=None, client=None):
+        assert token == "hf_mytoken"
+        return repo_json
+
+    def fake_fetch_header(url, **kwargs):
+        seen_tokens.append(kwargs.get("token"))
+        return gguf.GgufInfo(
+            arch="qwen4exp", context_length=262144, name="Qwen3.8-Flash-Next", size_label=None,
+            file_type=None, version=3, tensor_count=1, kv_count=1, kv_read=1,
+        ), None
+
+    monkeypatch.setattr(hf, "fetch_repo", fake_fetch_repo)
+    monkeypatch.setattr(gguf, "fetch_header", fake_fetch_header)
+
+    resp = client.post(
+        "/api/models/resolve",
+        json={"repo_id": "Navin-Models/Qwen3.8-Flash-Next-Uncensored-AD-4.27-GGUF", "token": "hf_mytoken"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["gated"] is True
+    assert len(body["quants"]) == 2
+    assert seen_tokens == ["hf_mytoken"]
+    assert hf.load_token() == "hf_mytoken"
+
+
+def test_resolve_gated_repo_without_token_and_header_fails_returns_message_not_500(client, monkeypatch):
+    """repo gated ไม่มี token เลย (ไม่ได้ใส่มา และไม่เคยเซฟไว้ก่อน) แล้ว fetch_header ล้มเหลว (401)
+    → arch/ctx_train เป็น None และมี message บอกให้ใส่ token — ห้าม 500
+    """
+    repo_json = _load_fixture("hf_navin-qwen38-flash-next-ad427-gguf_blobs.json")
+
+    def fake_fetch_repo(repo_id, *, token=None, client=None):
+        assert token is None
+        return repo_json
+
+    def fake_fetch_header(url, **kwargs):
+        assert kwargs.get("token") is None
+        raise httpx.HTTPStatusError("401", request=httpx.Request("GET", url), response=httpx.Response(401))
+
+    monkeypatch.setattr(hf, "fetch_repo", fake_fetch_repo)
+    monkeypatch.setattr(gguf, "fetch_header", fake_fetch_header)
+
+    resp = client.post(
+        "/api/models/resolve",
+        json={"repo_id": "Navin-Models/Qwen3.8-Flash-Next-Uncensored-AD-4.27-GGUF"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["gated"] is True
+    assert body["arch"] is None
+    assert body["ctx_train"] is None
+    assert body["message"]
+    assert "token" in body["message"]
+
+
 def test_resolve_safetensors_config_fetch_failure_degrades_gracefully(client, monkeypatch):
     """config.json อ่านไม่ได้ (network พัง/parse พัง) → arch/ctx เป็น None ไม่ใช่ 500"""
     repo_json = _load_fixture("hf_qwen3-8b-fp8_blobs.json")

@@ -41,3 +41,46 @@
 - **สาเหตุ**: กติกา `live` เทียบ **ชื่อ** gateway กับชื่อไฟล์ของ instance · hub เดิมตั้งชื่อใน LiteLLM ไม่แน่นอน — โมเดลก่อนหน้าตั้งตามชื่อไฟล์ (บังเอิญตรง) แต่ตัวนี้ตั้งตาม `id` ใน catalog (`qwen3.8-flash-next-udq2` vs `Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf`) ⇒ ไม่ตรง ⇒ `live=false` ทุกตัว ⇒ `recommended_model=None`
 - **วิธีแก้**: เลิกเทียบชื่อ — ถาม LiteLLM ที่ `/model/info` ซึ่งคืน `litellm_params.api_base` แล้วเทียบ **พอร์ตปลายทางจริง** กับพอร์ตของ instance ที่รันอยู่ · `/model/info` ใช้ไม่ได้ → ถอยไปเทียบชื่อแบบเดิม
 - **ยืนยันแล้ว**: 2026-08-29 18:55 — `qwen3.8-flash-next-udq2` ขึ้น ✅ ใช้ได้ · ทดสอบ chat ในหน้าเว็บตอบ "ดอกราชพฤกษ์" 27.5 tok/s
+
+## [2026-09-03 15:15] AI Server v2 (:9001) ไม่ขึ้นเองตอนบูตเครื่อง
+
+- **อาการ**: หลังเปิดเครื่อง DGX เข้า `http://gx10-6214.tail3f5086.ts.net:9001/` ไม่ได้ ต้องสั่ง start ด้วยมือทุกครั้ง ขณะที่ hub เดิม `:9000` ขึ้นเองปกติ
+- **สาเหตุ**: crontab ของ user `dgx` บน DGX มีเฉพาะ entry ของ v1 (`:9000`) เท่านั้น — ทั้ง `@reboot` และ watchdog รายนาที ไม่มีบรรทัดใดชี้ไป `/home/dgx/aiserver2/run.sh` เลย ไม่ใช่ปัญหาของ `run.sh` (ทดสอบสั่ง start ด้วยมือแล้วขึ้นปกติ health 200) และเครื่องไม่มี systemd unit ของ aiserver ทั้ง system และ user scope — autostart ของโปรเจกต์นี้อาศัย cron อย่างเดียว
+- **วิธีแก้**: สำรอง crontab เดิมไว้ที่ `/home/dgx/crontab.bak.20260903-1513` แล้วเติม 2 บรรทัดต่อท้าย crontab ของ user `dgx` ล้อรูปแบบเดียวกับ v1:
+  ```
+  @reboot sleep 30 && AISERVER2_PORT=9001 bash /home/dgx/aiserver2/run.sh start
+  * * * * * curl -sf -m5 http://127.0.0.1:9001/api/health >/dev/null 2>&1 || (sleep 8; curl -sf -m5 http://127.0.0.1:9001/api/health >/dev/null 2>&1) || AISERVER2_PORT=9001 bash /home/dgx/aiserver2/run.sh start >/dev/null 2>&1
+  ```
+  (`sleep 30` ตั้งให้ห่างจากของ v1 ที่ใช้ `sleep 25` · watchdog เช็ค `/api/health` ของ v2 ไม่ใช่ `/api/status` ของ v1)
+- **ยืนยันแล้ว**: ฆ่า process uvicorn ของ `:9001` ทิ้ง แล้ว watchdog กู้กลับมาเองภายใน 25 วินาที (health 200) และเรียกจากภายนอกผ่าน tailscale `http://gx10-6214.tail3f5086.ts.net:9001/` ได้ 200
+- **ข้อควรรู้ที่เจอระหว่างแก้**: ถ้าจะสั่ง `pkill -f "uvicorn server.main:app.*--port 9001"` ผ่าน ssh บรรทัดเดียว pattern จะไป match ตัว shell ของคำสั่งเองทำให้ ssh ตาย exit 255 — ให้ใช้ `bash /home/dgx/aiserver2/run.sh stop` แทน
+- **สิ่งที่ยังไม่ได้พิสูจน์ตรง ๆ**: ยังไม่ได้ reboot เครื่องจริงเพื่อทดสอบ `@reboot` (ยังไม่ได้ขออนุญาตเจ้าของเครื่อง) — แต่ watchdog รายนาทีเป็นตาข่ายรองอยู่แล้ว ต่อให้ `@reboot` พลาด ระบบจะขึ้นเองภายในราว 1 นาทีหลังบูต
+
+## [2026-09-03 15:41] โหลด qwen3-8b-fp8 ไม่ขึ้น และ error ในหน้าเว็บโชว์เป็น hash
+
+- **อาการ**: กดโหลด `qwen3-8b-fp8` แล้วหน้าเว็บขึ้น "โหลด qwen3-8b-fp8 ขึ้นแรมไม่สำเร็จ (พอร์ต 8001): 401acf608e3cfe4aec064dc03f8f8939607c3c9124fc467359da1c42df8db5bb" — เป็น hash 64 ตัวไม่มีข้อความ error ใด ๆ ให้ตามต่อ
+- **สาเหตุ**: มี 2 ชั้นซ้อนกัน
+  1. ต้นเหตุจริงที่โหลดไม่ขึ้น — vLLM ตายตั้งแต่ `process_weights_after_loading` ด้วย `RuntimeError: Assertion error (deepgemm-src/csrc/apis/layout.hpp:59): Unknown SF transformation` · DeepGEMM (เปิดเป็น default `VLLM_USE_DEEP_GEMM=True` ใน image) แปลง scale-factor layout ของ FP8 block-quant บน GB10 ไม่ได้ ⇒ EngineCore ตายทั้งตัว ไม่เกี่ยวกับแรมหรือไฟล์โมเดลเสีย
+  2. เหตุที่ตามต่อไม่ได้ — `engines/vllm.sh` เขียน `docker run -d ... > "$LOG_DIR/vllm.log" 2>&1` แต่ `docker run -d` พิมพ์แค่ **container ID** ออก stdout ⇒ `vllm.log` เหลือ 65 ไบต์เป็น container id ล้วน · `main.py` อ่านไฟล์นี้ไปโชว์เป็นข้อความ error ⇒ ผู้ใช้เห็น hash · log จริงอยู่ใน `docker logs` ซึ่งไม่มีใครอ่าน
+     (แถมยังพบว่า `docker run` ไม่มี `-e` เลย ⇒ env ที่ตั้งใน `engine_env` ของ entry ตกอยู่แค่ระดับ shell ไปไม่ถึง vLLM ในคอนเทนเนอร์)
+- **วิธีแก้** (แก้ที่ `engines/vllm.sh` 3 จุด แล้ว deploy):
+  1. ปิด DeepGEMM เป็นค่าตั้งต้น — `ENV_FLAGS=(-e "VLLM_USE_DEEP_GEMM=${VLLM_USE_DEEP_GEMM-0}")` · เปิดกลับต่อโมเดลได้ด้วย `VLLM_USE_DEEP_GEMM=1` ใน `engine_env`
+  2. ส่ง `VLLM_*` ทุกตัวจาก env เข้าคอนเทนเนอร์ด้วย `-e` (ยกเว้น `VLLM_TOOL_PARSER` / `VLLM_REASONING_PARSER` / `VLLM_SPECULATIVE` ที่เป็น flag ของสคริปต์เอง ไม่ใช่ env ของ vLLM)
+  3. เลิก redirect stdout ของ `docker run -d` ทับไฟล์ log — เก็บ container id ไว้ในตัวแปร (`if ! CID=$(docker run -d ... 2> "$LOG_DIR/vllm.log"); then` เพื่อให้ error ของ docker เองยังลงไฟล์) แล้ว stream log จริงด้วย `( setsid docker logs -f "$CID" > "$LOG_DIR/vllm.log" 2>&1 < /dev/null & )` แบบ detach ปิด fd ครบตามบทเรียนเดิมของ run.sh
+- **ยืนยันแล้ว**: 2026-09-03 15:41 — สั่งผ่าน API จริง `POST /api/activate {"id":"qwen3-8b-fp8","port":8000,"allow_main_port":true}` ได้ `{"ok":true,"port":8000}` ใช้เวลาราว 110 วินาที · `/api/instances` เห็น instance `up:true` · chat ตอบ "4" (finish_reason=stop) · request ที่มี tools ได้ 200 (tool parser ยังทำงาน) · `~/.aiserver/logs/vllm.log` มี log จริง 178 บรรทัด ไม่ใช่ hash เดี่ยวอีกแล้ว
+
+## [2026-09-03 15:48] aria2.log โตถึง 17 GB
+
+- **อาการ**: `~/.aiserver2/logs/aria2.log` โตถึง 17 GB และยังโตต่อเนื่อง ทั้งที่ไม่มี download ค้างอยู่เลย (ทุก job สถานะ done) — เจอตอนไล่ปัญหาอื่นแล้วบังเอิญเห็นขนาดไฟล์
+- **สาเหตุ**: aria2 แยก log level เป็นสองตัวคนละหน้าที่ — `--console-log-level` (จอ) กับ `--log-level` (ไฟล์ที่ระบุด้วย `--log`) · `services/aria2.sh` ตั้งแต่ `--console-log-level=warn` ไว้ตัวเดียว ส่วน `--log-level` ไม่ได้ตั้ง จึงใช้ค่า default ของ aria2 คือ **debug** (ยืนยันจาก `aria2c --help=#advanced` บนเครื่องจริง) ⇒ ไฟล์เก็บ debug ทุกบรรทัด และ `downloads.py` poll RPC ทุกไม่กี่วินาที ไฟล์เลยโตไม่หยุด
+- **วิธีแก้**: เติม `--log-level=warn` ต่อจาก `--console-log-level=warn` ใน `services/aria2.sh` · ส่งไฟล์ขึ้น DGX · `aria2.sh stop` → ลบไฟล์ log เดิมทิ้ง → `aria2.sh start`
+- **ยืนยันแล้ว**: 2026-09-03 15:48 — อ่าน `/proc/<pid>/cmdline` ของ aria2 ที่รันอยู่จริง เห็น `--console-log-level=warn` และ `--log-level=warn` ครบทั้งคู่ · ไฟล์ log จาก 17 GB เหลือ 0 ไบต์ · เฝ้าดู 120 วินาทีพร้อม poll `/api/downloads` ซ้ำ ๆ ไฟล์ยังคง 0 ไบต์ ไม่โตอีก · `/api/downloads` ยังคุยกับ aria2 ผ่าน RPC ได้ปกติ (secret เดิมใช้ได้ ไม่ต้อง restart server)
+
+## [2026-09-22 21:35] GGUF repo ที่ชื่อไฟล์ลงท้ายด้วยชื่อ variant ถูกมองว่า "ไม่ใช่ GGUF" + repo gated ดาวน์โหลดไม่ได้
+
+- **อาการ**: วาง `Navin-Models/Qwen3.8-Flash-Next-Uncensored-AD-4.27-GGUF` ในช่องตรวจสอบ → `arch: ไม่ทราบ` และ "repo นี้ไม่ใช่ GGUF และไม่ใช่ safetensors — ยังไม่รองรับ" ทั้งที่ repo มี .gguf 68 ไฟล์
+- **สาเหตุ** (2 ข้อ):
+  1. `server/hf.py` `_QUANT_RE` บังคับให้ quant token อยู่ท้าย stem แต่ไฟล์ของ repo นี้อยู่ที่ root และลงท้ายด้วยชื่อ variant `-main-00001-of-00034.gguf` / `-mainline-00001-of-00033.gguf` → `key is None` → ถูกข้ามทุกไฟล์ → `groups == []` → main.py ตกไปข้อความ "ไม่รู้จักรูปแบบ" (ยืนยันด้วยการรัน `group_quants()` กับ siblings จริง ได้ `[]`)
+  2. repo เป็น gated="auto" — HF API list ไฟล์ได้โดยไม่ต้อง token แต่ resolve URL ตอบ `401 GatedRepo` ทั้งตอนอ่าน header และดาวน์โหลด · เดิม `main.py` hardcode `"gated": False`, `gguf.fetch_header()` ไม่รับ token, และ aria2 `addUri` ไม่ส่ง Authorization → ใส่ token ในช่อง UI ก็โหลดไม่ได้อยู่ดี
+- **วิธีแก้**: `hf.group_quants()` — ไฟล์ root ที่ไม่มี quant token ใช้ stem ทั้งก้อนเป็น key (สอดคล้องกับกติกาโฟลเดอร์ย่อย) + `_IGNORE_KEYWORDS=("imatrix",)` กันไฟล์ calibration · `hf.is_gated()` ส่งค่าจริงจาก HF API · `hf.save_token()/load_token()` เก็บ token ที่ `~/.aiserver2/hf_token` (0600) เมื่อผู้ใช้ใส่ตอนตรวจสอบ · `gguf.fetch_header(token=)` ส่ง Bearer (httpx ตัด header ทิ้งเองเมื่อ 302 ข้ามออริจินไป CDN) · `downloads.Aria2Client.add_uri(headers=)` + `DownloadManager(token_loader=)` ส่ง `Authorization` ให้ aria2 เฉพาะ URL host `huggingface.co` · UI: แสดง `data.message` ในเส้นทางปกติ, ปรับข้อความ 🔒, dedupe id ไม่ให้ยาวซ้ำชื่อ repo
+- **ยืนยันแล้ว**: 2026-09-22 21:35 — deploy `:9001` แล้ว `POST /api/models/resolve` คืน `gated: true` · quant 2 กลุ่ม `…-AD-4.27-mainline` (33 shard, 94.5 GB, fits_ram true) และ `…-AD-4.27-main` (34 shard, 97.3 GB) · mmproj อยู่ใน companions · มี message บอกให้ใส่ token · repo ไม่ gated (`unsloth/GLM-5.3-Flash-GGUF`) ยังได้ arch `glm5next` 7 quant เหมือนเดิม · unit test 328/328 (ใหม่ 29 ตัว) · ⚠️ ชุด `main` 34 shard ต้องใช้ llama.cpp จาก PR #28243 ใช้กับ build ปกติไม่ได้ ผู้ใช้ต้องเลือก `mainline`
