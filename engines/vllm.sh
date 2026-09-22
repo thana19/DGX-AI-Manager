@@ -49,12 +49,33 @@ if [ "$SPECULATIVE" = "mtp" ]; then
   EXTRA_FLAGS+=(--speculative-config '{"method":"mtp","num_speculative_tokens":3}')
 fi
 
-docker run -d --name aiserver-vllm --gpus all --ipc=host \
-  -p 8000:8000 -v "$(dirname "$MODEL_DIR")":/models \
+# env ของ vLLM ต้องส่งเข้า container ด้วย -e — ตั้งไว้บน host เฉย ๆ ไปไม่ถึงตัว vLLM ที่รันข้างใน
+#   DeepGEMM: บน GB10 แปลง scale-factor layout ของ FP8 block-quant ไม่ได้ ⇒ RuntimeError
+#   "Unknown SF transformation" ตั้งแต่ process_weights_after_loading แล้ว EngineCore ตายทั้งตัว
+#   (เจอจริง 2026-09-03 กับ qwen3-8b-fp8 · ปิดแล้วขึ้นได้ใน 120 วิ ทั้ง chat และ tools ปกติ)
+#   โมเดลที่อยากลองเปิด: ตั้ง VLLM_USE_DEEP_GEMM=1 ใน engine_env ของ entry นั้น
+ENV_FLAGS=(-e "VLLM_USE_DEEP_GEMM=${VLLM_USE_DEEP_GEMM-0}")
+# VLLM_* ตัวอื่นที่ engine_env ตั้งไว้ ส่งต่อเข้า container ให้หมด — ยกเว้น 3 ตัวที่เป็น flag ของสคริปต์นี้เอง
+for _v in ${!VLLM_@}; do
+  case "$_v" in
+    VLLM_TOOL_PARSER|VLLM_REASONING_PARSER|VLLM_SPECULATIVE|VLLM_USE_DEEP_GEMM) continue ;;
+  esac
+  ENV_FLAGS+=(-e "$_v=${!_v}")
+done
+
+# "docker run -d" พิมพ์แค่ container ID ออก stdout — redirect ทับ log ตรง ๆ ไฟล์จึงเหลือแค่ id
+# (เจอจริง: หน้าเว็บโชว์ error เป็น hash 64 ตัวแทน log จริง จนตามสาเหตุไม่ได้)
+# → เก็บ id ไว้ แล้วดึง log จริงจาก docker logs -f มาเขียนลงไฟล์แทน
+if ! CID=$(docker run -d --name aiserver-vllm --gpus all --ipc=host \
+  -p 8000:8000 -v "$(dirname "$MODEL_DIR")":/models "${ENV_FLAGS[@]}" \
   "$IMAGE" \
   vllm serve "/models/$(basename "$MODEL_DIR")" \
   --served-model-name "${MODEL_ID:-$(basename "$MODEL_DIR")}" auto \
   "${EXTRA_FLAGS[@]}" \
   --max-num-seqs 4 --gpu-memory-utilization 0.55 --max-model-len "${CTX:-32768}" "$@" \
-  > "$LOG_DIR/vllm.log" 2>&1
+  2> "$LOG_DIR/vllm.log"); then
+  echo "docker run ไม่สำเร็จ:"; cat "$LOG_DIR/vllm.log"; exit 1
+fi
+# stream log ลงไฟล์แบบ detach — setsid + ปิด fd ครบ กัน subshell ถือ pipe ไว้แล้วทำ ssh แขวน (บทเรียนเดียวกับ run.sh)
+( setsid docker logs -f "$CID" > "$LOG_DIR/vllm.log" 2>&1 < /dev/null & ) > /dev/null 2>&1 < /dev/null
 WAIT_CONTAINER=aiserver-vllm wait_health 600
