@@ -149,24 +149,46 @@ def is_gated(repo_json: dict) -> bool:
     return gated in ("auto", "manual", True)
 
 
-def probe_gated_url(url: str, *, client: httpx.Client | None = None) -> bool:
+def probe_download_access(
+    url: str, *, token: str | None = None, client: httpx.Client | None = None
+) -> str | None:
     """เช็คเร็ว ๆ (HEAD) ว่า URL ดาวน์โหลดนี้จะโดน 401/403 แน่ไหม ก่อนส่งให้ aria2 โหลดจริง
 
-    ใช้ก่อน submit /api/downloads กันยิง job ที่รู้อยู่แล้วว่าจะพัง (ไม่มี HF token + repo ติด gate)
+    ใช้ก่อน submit /api/downloads กันยิง job ที่รู้อยู่แล้วว่าจะพัง — ทั้งกรณีไม่มี token เลย
+    และกรณีมี token แล้วแต่ยังไม่ได้กด "Agree and access repository" (หรือ token ไม่มีสิทธิ์พอ)
     ⚠️ ไม่ตาม redirect (follow_redirects=False) — แค่เช็ค auth ไม่ต้องโหลดไฟล์จริงหรือตาม CDN
-    เน็ตพัง/timeout/error อื่น ๆ → คืน False (ปล่อยผ่านให้ aria2 ไปรายงาน error เองตอนโหลดจริง
+    เน็ตพัง/timeout/error อื่น ๆ → คืน None (ปล่อยผ่านให้ aria2 ไปรายงาน error เองตอนโหลดจริง
     ดีกว่าบล็อกผู้ใช้เพราะปัญหาเน็ตชั่วคราวของเราเอง)
+
+    คืน None เมื่อไม่ติด gate (หรือเช็คไม่ได้) — คืนข้อความภาษาไทยอธิบายเหตุผลที่ HF ปฏิเสธเมื่อ 401/403
+    ดึงจาก header `x-error-message` ที่ HF ส่งมาด้วยถ้ามี (เช่น "Access to model X is restricted...")
     """
     own_client = client is None
     http_client = client or httpx.Client()
+    headers = {"Authorization": f"Bearer {token}"} if token else None
     try:
-        resp = http_client.head(url, follow_redirects=False, timeout=10.0)
-        return resp.status_code in (401, 403)
+        resp = http_client.head(url, follow_redirects=False, timeout=10.0, headers=headers)
     except httpx.HTTPError:
-        return False
+        return None
     finally:
         if own_client:
             http_client.close()
+
+    if resp.status_code not in (401, 403):
+        return None
+    error_message = resp.headers.get("x-error-message")
+    if error_message:
+        return f"HF ปฏิเสธ ({resp.status_code}): {error_message}"
+    return f"HF ปฏิเสธ ({resp.status_code})"
+
+
+def probe_gated_url(url: str, *, client: httpx.Client | None = None) -> bool:
+    """เช็คเร็ว ๆ ว่า URL ดาวน์โหลดนี้จะโดน 401/403 แน่ไหม — thin wrapper รอบ probe_download_access
+
+    เก็บไว้เพื่อ backward-compat (คืน bool เหมือนเดิม); โค้ดใหม่ควรเรียก probe_download_access ตรง ๆ
+    เพื่อได้ข้อความเหตุผลจาก HF ด้วย
+    """
+    return probe_download_access(url, client=client) is not None
 
 
 def token_path() -> str:

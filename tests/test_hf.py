@@ -29,6 +29,7 @@ from server.hf import (
     list_files,
     load_token,
     normalize_repo_id,
+    probe_download_access,
     probe_gated_url,
     quant_label,
     resolve_url,
@@ -337,6 +338,89 @@ def test_probe_gated_url_exception_returns_false():
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     assert probe_gated_url("https://huggingface.co/some/repo/resolve/main/f.gguf", client=client) is False
+
+
+# ---------------------------------------------------------------------------
+# probe_download_access — เหมือน probe_gated_url แต่คืนข้อความเหตุผลจาก HF ด้วย
+# (hotfix: token จำไว้แล้วแต่ยังไม่ได้กด accept gate ⇒ probe ต้องรู้เรื่องนี้ด้วย)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_download_access_403_with_x_error_message_header_included_in_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            headers={
+                "x-error-code": "GatedRepo",
+                "x-error-message": (
+                    "Access to model X is restricted and you are not in the authorized list. "
+                    "Visit https://huggingface.co/X to ask for access."
+                ),
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    message = probe_download_access("https://huggingface.co/some/gated-repo/resolve/main/f.gguf", client=client)
+
+    assert message is not None
+    assert "403" in message
+    assert "Access to model X is restricted" in message
+
+
+def test_probe_download_access_403_without_header_returns_generic_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    message = probe_download_access("https://huggingface.co/some/gated-repo/resolve/main/f.gguf", client=client)
+
+    assert message is not None
+    assert "403" in message
+
+
+@pytest.mark.parametrize("status", [200, 307])
+def test_probe_download_access_200_307_returns_none(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert probe_download_access("https://huggingface.co/some/open-repo/resolve/main/f.gguf", client=client) is None
+
+
+def test_probe_download_access_exception_returns_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert probe_download_access("https://huggingface.co/some/repo/resolve/main/f.gguf", client=client) is None
+
+
+def test_probe_download_access_sends_bearer_token_when_given():
+    seen_headers = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        return httpx.Response(403)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    probe_download_access(
+        "https://huggingface.co/some/gated-repo/resolve/main/f.gguf", token="hf_abc123", client=client
+    )
+
+    assert seen_headers.get("authorization") == "Bearer hf_abc123"
+
+
+def test_probe_download_access_no_auth_header_when_no_token():
+    seen_headers = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        return httpx.Response(403)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    probe_download_access("https://huggingface.co/some/gated-repo/resolve/main/f.gguf", client=client)
+
+    assert "authorization" not in seen_headers
 
 
 # ---------------------------------------------------------------------------

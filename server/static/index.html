@@ -412,7 +412,7 @@
     <p class="section-hint">งานดาวน์โหลดที่กำลังทำงานหรือทำล่าสุด</p>
     <div class="tabs" id="downloads-tabs">
       <button type="button" class="tab-btn active" data-dltab="active">กำลังดำเนินการ</button>
-      <button type="button" class="tab-btn" data-dltab="done">สำเร็จ</button>
+      <button type="button" class="tab-btn" data-dltab="done">จบแล้ว</button>
     </div>
     <div id="downloads-list"></div>
     <div id="downloads-status" class="empty-state" style="display:none;"></div>
@@ -1601,14 +1601,16 @@
 
   var DOWNLOAD_TAB_EMPTY = {
     active: "ไม่มีงานที่กำลังดาวน์โหลด",
-    done: "ยังไม่มีงานที่สำเร็จ"
+    done: "ยังไม่มีงานที่จบแล้ว"
   };
+
+  var DOWNLOAD_FINISHED_STATES = ["done", "error", "cancelled"];
 
   function renderDownloads(jobs){
     state.lastJobs = jobs || [];
 
-    var unfinished = state.lastJobs.filter(function(j){ return j.state !== "done"; });
-    var finished = state.lastJobs.filter(function(j){ return j.state === "done"; }).sort(function(a, b){
+    var unfinished = state.lastJobs.filter(function(j){ return DOWNLOAD_FINISHED_STATES.indexOf(j.state) === -1; });
+    var finished = state.lastJobs.filter(function(j){ return DOWNLOAD_FINISHED_STATES.indexOf(j.state) !== -1; }).sort(function(a, b){
       return (b.created_at || 0) - (a.created_at || 0);
     });
 
@@ -1617,7 +1619,7 @@
       var activeBtn = tabsEl.querySelector('[data-dltab="active"]');
       var doneBtn = tabsEl.querySelector('[data-dltab="done"]');
       if(activeBtn) activeBtn.textContent = "กำลังดำเนินการ (" + unfinished.length + ")";
-      if(doneBtn) doneBtn.textContent = "สำเร็จ (" + finished.length + ")";
+      if(doneBtn) doneBtn.textContent = "จบแล้ว (" + finished.length + ")";
     }
 
     var currentJobs = state.downloadTab === "done" ? finished : unfinished;

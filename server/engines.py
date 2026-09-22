@@ -375,6 +375,9 @@ def check_arch(
     if info is None:
         info = detect(engine)
     requires = requires or {}
+    # normalize: "" หรือช่องว่างล้วน (เช่น entry ที่ UI เพิ่มไว้ก่อนอ่าน GGUF header สำเร็จ)
+    # ต้องถือเป็น "ยังไม่รู้ arch" เหมือน None ทุกประการ — ไม่งั้นจะหลุดไปโดนข้อ 8 (ไม่อยู่ใน arch list)
+    arch = (arch or "").strip() or None
 
     # 1. engine ไม่ได้ติดตั้ง
     if not info.installed:

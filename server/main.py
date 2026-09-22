@@ -415,15 +415,27 @@ def create_download(req: DownloadReq) -> dict[str, Any]:
     if not entry.dl:
         raise HTTPException(status_code=400, detail=f"โมเดล {entry.id} ไม่มีลิงก์ดาวน์โหลดอัตโนมัติ (dl)")
 
-    # กันยิง job ที่รู้อยู่แล้วว่าจะ 401 (ไม่มี HF token + repo ติด gate) — ตรวจแค่ URL แรกพอ
-    # เพราะทุก shard อยู่ repo เดียวกัน (ดู hotfix 2026-09-22: aria2 ปล่อยให้ submit ไปทั้งที่โหลดไม่ได้แน่)
+    # กันยิง job ที่รู้อยู่แล้วว่าจะ 401/403 (repo ติด gate) — ตรวจแค่ URL แรกพอ เพราะทุก shard
+    # อยู่ repo เดียวกัน (ดู hotfix 2026-09-22: aria2 ปล่อยให้ submit ไปทั้งที่โหลดไม่ได้แน่)
+    # ตรวจทั้งกรณีไม่มี token เลย และกรณีมี token แล้วแต่ยังไม่ได้กด accept gate / token สิทธิ์ไม่พอ
     first_host = (urllib.parse.urlsplit(entry.dl[0]).hostname or "").lower()
     is_hf_url = first_host == "huggingface.co" or first_host.endswith(".huggingface.co")
-    if is_hf_url and hf.load_token() is None and hf.probe_gated_url(entry.dl[0]):
-        raise HTTPException(
-            status_code=400,
-            detail="repo นี้ติด gate — ใส่ HF token ในช่อง 'ตรวจสอบ HF repo' แล้วกดตรวจสอบก่อน ระบบจะจำ token ไว้ดาวน์โหลด",
-        )
+    if is_hf_url:
+        stored_token = hf.load_token()
+        deny_message = hf.probe_download_access(entry.dl[0], token=stored_token)
+        if deny_message:
+            if stored_token is None:
+                detail = (
+                    "repo นี้ติด gate — ใส่ HF token ในช่อง 'ตรวจสอบ HF repo' แล้วกดตรวจสอบก่อน "
+                    "ระบบจะจำ token ไว้ดาวน์โหลด"
+                )
+            else:
+                detail = (
+                    f"{deny_message} — ต้องกด 'Agree and access repository' บนหน้า repo ด้วยบัญชีของ token นี้ "
+                    "และ token แบบ fine-grained ต้องมีสิทธิ์ 'Read access to contents of all public gated repos' "
+                    "(หรือใช้ token ชนิด Read) แล้วใส่ token ใหม่ในช่องตรวจสอบ"
+                )
+            raise HTTPException(status_code=400, detail=detail)
 
     targets = _download_targets(entry)
     job = get_download_manager().submit(entry.id, targets)

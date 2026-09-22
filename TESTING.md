@@ -148,3 +148,33 @@
 
 - ยังไม่ได้ทดสอบดาวน์โหลดจริงด้วย token (พี่หนุ่มจะใส่เอง)
 - เอกสารวิธีหา token: huggingface.co/settings/tokens (Read) + กด Agree ที่หน้า repo
+
+## [2026-09-23 06:20] follow-up ดาวน์โหลด: แจ้งเหตุผล 403 · แท็บ job จบแล้ว · arch ว่าง = ไม่ทราบ
+
+### ภาพรวม
+
+| รายการ | ผล |
+|---|---|
+| Unit test | 351/351 ผ่าน (เดิม 342 + ใหม่ 9) |
+| Bug ที่พบและแก้ | 3 ตัว (ดู `fix.md` entry `[2026-09-23 06:20]`) |
+
+### Checklist
+
+| ข้อ | สิ่งที่ทดสอบ | ผล | หลักฐาน |
+|---|---|---|---|
+| 1 | Unit test ทั้งชุด | ✅ | 351/351 ผ่าน (ใหม่ 9: `probe_download_access` 403+header/403/200-307/exception/Authorization header · `create_download` มี token ปฏิเสธ→400 / ผ่าน→submit · `check_arch` "" → unknown) |
+| 2 | Deploy `:9001` | ✅ | UP |
+| 3 | `POST /api/downloads` มี token | ✅ | 400 พร้อมข้อความ HF และวิธีแก้ |
+| 4 | `GET /api/models` entry arch "" | ✅ | compat `unknown` |
+| 5 | UI แท็บ "จบแล้ว" | ✅ | ตรวจจาก diff เท่านั้น ยังไม่ได้เปิด browser |
+
+### Deploy log
+
+| เวลา | action | result |
+|---|---|---|
+| 2026-09-23 06:17 | `bash deploy.sh` | UP |
+
+### หมายเหตุ
+
+- ยังโหลดจริงไม่ได้จนกว่าบัญชี HF จะกด Agree
+- token ที่ใช้เป็น fine-grained ต้องมีสิทธิ์ "Read access to contents of all public gated repos" หรือใช้ token ชนิด Read

@@ -257,6 +257,17 @@ def test_check_arch_rule5_arch_unknown():
     assert result.action is None
 
 
+def test_check_arch_rule5_empty_string_arch_treated_as_unknown():
+    # entry ที่ UI เพิ่มไว้ก่อนอ่าน GGUF header สำเร็จ จะมี arch เป็น "" ไม่ใช่ None
+    # ต้องได้ unknown เหมือน None ทุกประการ — ไม่ใช่หลุดไปโดนข้อ 8 (NEEDS_UPGRADE)
+    info = _llamacpp_info()
+
+    result = check_arch("", "llamacpp", info=info)
+
+    assert result.status == Compat.UNKNOWN
+    assert result.action is None
+
+
 def test_check_arch_rule6_cannot_read_arch_list():
     info = EngineInfo(
         name="vllm", installed=True, version="aiserver-vllm:26.07", build=None,

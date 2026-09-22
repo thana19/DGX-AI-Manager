@@ -117,3 +117,14 @@ session นี้ไม่ได้เพิ่มฟีเจอร์ เป�
   3. commit/push งาน hotfix
 
 - **Suggested Skills**: `superpowers:brainstorming` (ต่อเรื่อง upgrade) · `new-project-setup` · `project-hygiene`
+
+## [2026-09-22 22:17 → 2026-09-23 06:20] follow-up ดาวน์โหลด repo gated (403) + UI แท็บ + arch ว่าง
+
+- **สิ่งที่ทำ**: อ้าง `fix.md` entry `[2026-09-23 06:20]` และ `TESTING.md` entry `[2026-09-23 06:20]` · deploy `:9001`
+- **สถานะระบบล่าสุด (2026-09-23 06:20)**: token ของพี่หนุ่มอยู่บน DGX แล้ว แต่ HF ยัง 403 เพราะยังไม่ได้กด Agree บนหน้า repo · entry Navin 2 ตัวในคลัง (main ควรลบ) arch ว่าง — หลังโหลดเสร็จ/หรือลบแล้วเพิ่มใหม่หลังตรวจสอบด้วย token จะได้ arch qwen4exp
+- **งานค้าง / ควรทำ session ถัดไป**:
+  1. พี่หนุ่มกด Agree (บัญชี anaht) + เช็คสิทธิ์ token → กดโหลด mainline → ลบ entry main
+  2. ฟีเจอร์ upgrade (ยังไม่เริ่ม brainstorm — ดูหัวข้อก่อนหน้า)
+  3. commit/push งานนี้
+  4. (ไอเดีย) ปุ่ม "ตรวจสอบใหม่" บนการ์ดเพื่อเติม arch ให้ entry ที่ arch ว่าง
+- **Suggested Skills**: `superpowers:brainstorming` · `project-hygiene`

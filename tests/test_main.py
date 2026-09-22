@@ -697,13 +697,13 @@ def test_create_download_huggingface_no_token_gated_ตอบ_400_ไม่_subm
         id="j1", model_id="ds4-flash-unsloth-iq2xxs", files=[], created_at=0.0, state=DownloadState.QUEUED,
     ))
 
-    seen_urls = []
+    seen = []
 
-    def fake_probe(url: str, *, client: httpx.Client | None = None) -> bool:
-        seen_urls.append(url)
-        return True
+    def fake_probe(url: str, *, token: str | None = None, client: httpx.Client | None = None) -> str | None:
+        seen.append((url, token))
+        return "HF ปฏิเสธ (403)"
 
-    monkeypatch.setattr(hf, "probe_gated_url", fake_probe)
+    monkeypatch.setattr(hf, "probe_download_access", fake_probe)
 
     # entry นี้ไม่มี token ใน state (client fixture ชี้ AISERVER2_STATE ไปที่ tmp ว่าง)
     resp = client.post("/api/downloads", json={"model_id": "ds4-flash-unsloth-iq2xxs"})
@@ -711,15 +711,47 @@ def test_create_download_huggingface_no_token_gated_ตอบ_400_ไม่_subm
     assert resp.status_code == 400
     assert "token" in resp.json()["detail"]
     assert calls == []  # submit ต้องไม่ถูกเรียก
-    assert seen_urls == [
-        "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00001-of-00003.gguf"
-    ]  # ตรวจแค่ URL แรกพอ
+    assert seen == [
+        (
+            "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00001-of-00003.gguf",
+            None,
+        )
+    ]  # ตรวจแค่ URL แรกพอ ไม่มี token
 
 
-def test_create_download_huggingface_มี_token_ไม่เรียก_probe_และ_submit(client, monkeypatch):
+def test_create_download_huggingface_มี_token_probe_ปฏิเสธ_ตอบ_400_ไม่_submit(client, monkeypatch):
     from server.downloads import DownloadJob, DownloadState
 
-    hf.save_token("hf_abc123")  # มี token แล้ว — ไม่ต้องเสี่ยงยิง probe เลย
+    hf.save_token("hf_abc123")  # มี token แล้ว แต่ยังไม่ได้กด accept gate
+
+    mgr = main.get_download_manager()
+    calls = []
+    monkeypatch.setattr(mgr, "submit", lambda *a, **k: calls.append((a, k)) or DownloadJob(
+        id="j1", model_id="ds4-flash-unsloth-iq2xxs", files=[], created_at=0.0, state=DownloadState.QUEUED,
+    ))
+
+    seen = []
+
+    def fake_probe(url: str, *, token: str | None = None, client: httpx.Client | None = None) -> str | None:
+        seen.append((url, token))
+        return "HF ปฏิเสธ (403): Access to model X is restricted and you are not in the authorized list."
+
+    monkeypatch.setattr(hf, "probe_download_access", fake_probe)
+
+    resp = client.post("/api/downloads", json={"model_id": "ds4-flash-unsloth-iq2xxs"})
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "Agree" in detail
+    assert "Access to model X is restricted" in detail
+    assert calls == []  # submit ต้องไม่ถูกเรียก
+    assert seen == [(seen[0][0], "hf_abc123")]  # probe ต้องถูกเรียกพร้อม token ที่จำไว้
+
+
+def test_create_download_huggingface_มี_token_probe_ผ่าน_submit(client, monkeypatch):
+    from server.downloads import DownloadJob, DownloadState
+
+    hf.save_token("hf_abc123")  # มี token แล้ว และ probe ผ่าน (ไม่ติด gate/accept แล้ว)
 
     mgr = main.get_download_manager()
     calls = []
@@ -728,12 +760,15 @@ def test_create_download_huggingface_มี_token_ไม่เรียก_probe
     ))
 
     probe_calls = []
-    monkeypatch.setattr(hf, "probe_gated_url", lambda *a, **k: probe_calls.append((a, k)) or True)
+    monkeypatch.setattr(
+        hf, "probe_download_access",
+        lambda *a, **k: probe_calls.append((a, k)) or None,
+    )
 
     resp = client.post("/api/downloads", json={"model_id": "ds4-flash-unsloth-iq2xxs"})
 
     assert resp.status_code == 200
-    assert probe_calls == []  # มี token แล้ว ไม่ต้องเช็ค gate ก่อน
+    assert len(probe_calls) == 1  # มี token แล้วก็ยังต้องเช็ค (อาจยังไม่ได้ accept gate)
     assert len(calls) == 1
 
 
@@ -747,7 +782,7 @@ def test_create_download_url_ไม่ใช่_huggingface_ไม่เรี�
     assert resp.status_code == 200
 
     probe_calls = []
-    monkeypatch.setattr(hf, "probe_gated_url", lambda *a, **k: probe_calls.append((a, k)) or True)
+    monkeypatch.setattr(hf, "probe_download_access", lambda *a, **k: probe_calls.append((a, k)) or "gated")
 
     mgr = main.get_download_manager()
     monkeypatch.setattr(mgr, "submit", lambda *a, **k: DownloadJob(

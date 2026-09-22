@@ -98,3 +98,13 @@
 - **สาเหตุ**: `POST /api/downloads` submit ให้ aria2 ทันทีโดยไม่เช็คว่า URL huggingface.co นี้ต้องการ token ไหม · บน DGX ยังไม่มี `~/.aiserver2/hf_token`
 - **วิธีแก้**: ก่อน submit ถ้า URL แรกเป็น huggingface.co และไม่มี token ที่จำไว้ → `hf.probe_gated_url()` ยิง HEAD (ไม่ตาม redirect, timeout 10s) ถ้า 401/403 → ตอบ 400 "repo นี้ติด gate — ใส่ HF token ในช่อง 'ตรวจสอบ HF repo' แล้วกดตรวจสอบก่อน ระบบจะจำ token ไว้ดาวน์โหลด" · เน็ตพัง/timeout ปล่อยผ่านให้ aria2 รายงานเอง
 - **ยืนยันแล้ว**: 2026-09-22 22:05 — ยิง `POST /api/downloads` ของ entry mainline บน `:9001` โดยไม่มี token ได้ 400 พร้อมข้อความข้างต้น · job ที่ล้ม 2 ตัว (main/mainline) cancel แล้ว รอพี่หนุ่มใส่ token แล้วโหลด mainline ใหม่
+
+## [2026-09-23 06:20] มี token แล้วยังโหลดไม่ได้ (403) แต่ระบบไม่บอกเหตุผล + แท็บดาวน์โหลดนับ job ที่จบแล้วผิด + arch ว่างขึ้น "ต้องอัป engine"
+
+- **อาการ**: ใส่ HF token แล้ว (บันทึกที่ `~/.aiserver2/hf_token`) กดโหลดได้ job ที่ error "The response status is not successful. status=403" ไม่รู้ว่าต้องทำอะไร · job ที่ error/cancelled ยังนับอยู่ในแท็บ "กำลังดำเนินการ (5)" · การ์ดโมเดลที่เพิ่มตอนยังอ่าน header ไม่ได้ (arch = "") ขึ้น "⚠️ ต้องอัป engine — upgrade_llamacpp" ทั้งที่ควรเป็น "ไม่ทราบ"
+- **สาเหตุ** (3 ข้อ):
+  1. HF ตอบ 403 `x-error-message: … you are not in the authorized list` = token ใช้ได้แต่บัญชียังไม่ได้กด Agree ที่หน้า repo (หรือ fine-grained token ไม่มีสิทธิ์ gated repos) · guard ใน `create_download()` ตรวจเฉพาะกรณีไม่มี token
+  2. `renderDownloads()` ใน index.html ใช้ `state !== "done"` เป็น "ยังไม่จบ" → error/cancelled ค้างในแท็บแรกตลอด
+  3. `engines.check_arch()` เช็ค `arch is None` เท่านั้น สตริงว่างหลุดไปข้อ 8 "ไม่อยู่ใน arch list" → NEEDS_UPGRADE
+- **วิธีแก้**: `hf.probe_download_access(url, token=)` HEAD ด้วย token ที่จำไว้ คืนข้อความจาก `x-error-message` เมื่อ 401/403 · `create_download()` ตรวจทุกครั้งสำหรับ URL huggingface.co: ไม่มี token → 400 บอกให้ใส่ token · มี token แต่ HF ปฏิเสธ → 400 แนบข้อความ HF + บอกให้กด 'Agree and access repository' และตรวจสิทธิ์ token · UI: `DOWNLOAD_FINISHED_STATES = done/error/cancelled` ไปแท็บ "จบแล้ว" · `check_arch()` normalize `""`/ช่องว่าง → None (ข้อ 5 UNKNOWN)
+- **ยืนยันแล้ว**: 2026-09-23 06:20 — deploy `:9001` แล้ว `POST /api/downloads` entry mainline ตอบ 400 "HF ปฏิเสธ (403): Access to model … not in the authorized list … — ต้องกด 'Agree and access repository' …" · `GET /api/models` entry Navin ทั้งสอง compat `unknown` action None · unit test 351/351 (ใหม่ 9) · ⚠️ ณ เวลานี้บัญชีของพี่หนุ่มยังไม่ได้กด Agree (HEAD ด้วย token ยัง 403) — ต้องทำก่อนจึงโหลดได้
