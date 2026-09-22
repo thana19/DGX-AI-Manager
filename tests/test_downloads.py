@@ -56,6 +56,12 @@ class FakeAria2Server:
         self._jobs[gid]["errorCode"] = code
         self._jobs[gid]["errorMessage"] = message
 
+    def forget(self, gid: str):
+        """ลบ gid ออกจากเซิร์ฟเวอร์จำลอง — จำลอง aria2 restart แล้วลืม gid เก่า
+        (ของจริงบน DGX ยืนยันแล้วว่าตอบ HTTP 400 + {"error": {"code": 1, "message": "GID … is not found"}})
+        """
+        del self._jobs[gid]
+
     def set_progress(self, gid: str, *, done: int, total: int, speed: int = 0):
         j = self._jobs[gid]
         j["completedLength"] = done
@@ -90,7 +96,13 @@ class FakeAria2Server:
             result = gid
         elif method == "aria2.tellStatus":
             gid, keys = params
-            j = self._jobs[gid]
+            j = self._jobs.get(gid)
+            if j is None:
+                # ของจริงบน DGX: aria2 ตอบ HTTP 400 (ไม่ใช่ 200) เมื่อ gid ไม่รู้จัก (เช่นหลัง restart)
+                return httpx.Response(
+                    400,
+                    json={"id": body["id"], "jsonrpc": "2.0", "error": {"code": 1, "message": f"GID {gid} is not found"}},
+                )
             result = {k: str(j.get(k, "")) if k != "files" else j["files"] for k in keys}
         elif method == "aria2.pause":
             gid = params[0]
@@ -172,6 +184,48 @@ def test_aria2client_raises_on_rpc_error():
 
     with pytest.raises(Aria2Error):
         client.add_uri("http://example.com/f.gguf", "/tmp/dest", "f.gguf")
+
+
+# ---------------------------------------------------------------------------
+# call() ต้องแปลง error ของ aria2 เป็น Aria2Error เสมอ (ของจริงบน DGX: HTTP 400 + JSON error
+# ก่อนแก้ raise_for_status() หลุดเป็น httpx.HTTPStatusError แทน — ทำให้ refresh() ทั้งก้อน abort)
+# ---------------------------------------------------------------------------
+
+
+def test_call_http_400_พร้อม_json_error_ต้องเป็น_Aria2Error_ไม่ใช่_HTTPStatusError():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"id": "1", "jsonrpc": "2.0", "error": {"code": 1, "message": "GID xxxx is not found"}},
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = Aria2Client("http://127.0.0.1:6800/jsonrpc", client=http_client)
+
+    with pytest.raises(Aria2Error, match="not found"):
+        client.tell_status("xxxx")
+
+
+def test_call_http_500_body_ไม่ใช่_json_ต้องเป็น_Aria2Error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = Aria2Client("http://127.0.0.1:6800/jsonrpc", client=http_client)
+
+    with pytest.raises(Aria2Error):
+        client.tell_status("xxxx")
+
+
+def test_call_connect_error_ต้องเป็น_Aria2Error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = Aria2Client("http://127.0.0.1:6800/jsonrpc", client=http_client)
+
+    with pytest.raises(Aria2Error):
+        client.tell_status("xxxx")
 
 
 def test_aria2client_tell_status_converts_string_numbers_to_int():
@@ -586,6 +640,83 @@ def test_refresh_marks_job_error_when_daemon_dead_without_raising(tmp_path):
     job = mgr.get(job.id)
     assert job.state == DownloadState.ERROR
     assert job.files[0].error  # มีข้อความไทยบอกวิธีแก้
+
+
+# ---------------------------------------------------------------------------
+# refresh() ทนต่อ gid ที่ aria2 ลืม + ข้าม job ที่จบแล้ว (hotfix: HTTP 400 GID not found
+# เคยหลุดเป็น httpx.HTTPStatusError ทำให้ refresh ทั้งก้อน abort เงียบ ๆ ทุก job ค้าง state เดิม)
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_ข้าม_job_ที่จบแล้ว_ไม่ถาม_aria2_และ_job_active_authorization_failed_กลายเป็น_error(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"))
+
+    done_job = mgr.submit("model-done", [("http://example.com/done.gguf", str(tmp_path / "done.gguf"))])
+    gid_done = done_job.files[0].gid
+    server.complete(gid_done)
+    mgr.refresh()
+    done_job = mgr.get(done_job.id)
+    assert done_job.state == DownloadState.DONE
+
+    server.forget(gid_done)  # จำลอง aria2 restart แล้วลืม gid ของ job ที่จบไปแล้ว
+
+    active_job = mgr.submit("model-active", [("http://example.com/active.gguf", str(tmp_path / "active.gguf"))])
+    gid_active = active_job.files[0].gid
+    server.fail(gid_active, "Authorization failed.", code="24")
+
+    server.calls.clear()
+    mgr.refresh()
+
+    active_job = mgr.get(active_job.id)
+    assert active_job.state == DownloadState.ERROR
+    assert active_job.files[0].error == "Authorization failed."
+    # job DONE ต้องไม่ถูกถาม aria2 อีก (ไม่งั้นจะเจอ gid หาย 400 โดยไม่จำเป็น)
+    tell_status_gids = [params[0] for method, params in server.calls if method == "aria2.tellStatus"]
+    assert gid_done not in tell_status_gids
+    assert gid_active in tell_status_gids
+
+    with open(tmp_path / "downloads.json", encoding="utf-8") as fh:
+        saved = json.load(fh)
+    states_by_id = {j["id"]: j["state"] for j in saved["jobs"]}
+    assert states_by_id[active_job.id] == "error"  # _save_state ต้องถูกเรียก
+
+
+def test_refresh_active_job_gid_not_found_กลายเป็น_error_บอกให้โหลดใหม่(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"))
+
+    job = mgr.submit("model-a", [("http://example.com/a.gguf", str(tmp_path / "a.gguf"))])
+    gid = job.files[0].gid
+    server.forget(gid)  # จำลอง aria2 restart แล้วลืม gid นี้ (ยังไม่จบงาน ต่างจาก test ข้างบน)
+
+    mgr.refresh()  # ต้องไม่ raise
+
+    job = mgr.get(job.id)
+    assert job.state == DownloadState.ERROR
+    assert job.files[0].error == "aria2 ไม่รู้จักงานนี้แล้ว (aria2 อาจถูก restart) — กดดาวน์โหลดใหม่"
+
+
+def test_refresh_advance_queue_เริ่ม_job_ถัดไปหลัง_job_แรก_กลายเป็น_error(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"))
+
+    job1 = mgr.submit("model-a", [("http://example.com/a.gguf", str(tmp_path / "a.gguf"))])
+    job2 = mgr.submit("model-b", [("http://example.com/b.gguf", str(tmp_path / "b.gguf"))])
+    assert job2.files[0].gid is None  # ยังไม่เริ่ม รอคิว
+
+    gid1 = job1.files[0].gid
+    server.forget(gid1)
+    mgr.refresh()
+
+    job1 = mgr.get(job1.id)
+    job2 = mgr.get(job2.id)
+    assert job1.state == DownloadState.ERROR
+    assert job2.state == DownloadState.ACTIVE
+    assert job2.files[0].gid is not None
 
 
 # --- เทียบขนาดกับที่ HF บอก (กันไฟล์ค้างที่ไม่มี .aria2 ถูกนับว่าครบ) ---------

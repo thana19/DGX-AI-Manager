@@ -117,3 +117,34 @@
 
 - ยังไม่ได้ทดสอบขั้นดาวน์โหลดจริงด้วย token (ต้องใช้ token ที่ยอมรับ gate แล้ว — พี่หนุ่มจะใส่เองในช่อง UI)
 - ชุด `main` ใช้กับ llama.cpp build ปกติไม่ได้ ให้เลือก `mainline`
+
+## [2026-09-22 22:05] hotfix ดาวน์โหลด: refresh ทน gid เก่า + กัน repo gated ไม่มี token
+
+### ภาพรวม
+
+| รายการ | ผล |
+|---|---|
+| Unit test | 342/342 ผ่าน (เดิม 328 + ใหม่ 14) |
+| Bug ที่พบและแก้ | 2 ตัว (ดู `fix.md` entry `[2026-09-22 22:05]` ทั้งสอง) |
+
+### Checklist
+
+| ข้อ | สิ่งที่ทดสอบ | ผล | หลักฐาน |
+|---|---|---|---|
+| 1 | Unit test ทั้งชุด | ✅ | 342/342 ผ่าน (ใหม่ 14: `call()` 400-JSON/500/connect → `Aria2Error` · `refresh()` ข้าม job จบแล้ว · gid not found → error · advance queue · `probe_gated_url` 401/403/200/302/exception · `create_download` 400/มี token/ไม่ใช่ HF) |
+| 2 | Deploy `:9001` | ✅ | UP |
+| 3 | `GET /api/downloads` job `48852d8c` | ✅ | error "Authorization failed." ทันที (ก่อนแก้ค้าง active 0%) |
+| 4 | `POST /api/downloads/48852d8c/cancel` | ✅ | ok |
+| 5 | `POST /api/downloads` mainline ไม่มี token | ✅ | 400 พร้อมข้อความบอกให้ใส่ token |
+| 6 | cancel job `79121c2b` ที่คิวดันเริ่มไปโดยไม่มี token | ✅ | cancel สำเร็จ |
+
+### Deploy log
+
+| เวลา | action | result |
+|---|---|---|
+| 2026-09-22 22:02 | `bash deploy.sh` | UP |
+
+### หมายเหตุ
+
+- ยังไม่ได้ทดสอบดาวน์โหลดจริงด้วย token (พี่หนุ่มจะใส่เอง)
+- เอกสารวิธีหา token: huggingface.co/settings/tokens (Read) + กด Agree ที่หน้า repo

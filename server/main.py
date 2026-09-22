@@ -415,6 +415,16 @@ def create_download(req: DownloadReq) -> dict[str, Any]:
     if not entry.dl:
         raise HTTPException(status_code=400, detail=f"โมเดล {entry.id} ไม่มีลิงก์ดาวน์โหลดอัตโนมัติ (dl)")
 
+    # กันยิง job ที่รู้อยู่แล้วว่าจะ 401 (ไม่มี HF token + repo ติด gate) — ตรวจแค่ URL แรกพอ
+    # เพราะทุก shard อยู่ repo เดียวกัน (ดู hotfix 2026-09-22: aria2 ปล่อยให้ submit ไปทั้งที่โหลดไม่ได้แน่)
+    first_host = (urllib.parse.urlsplit(entry.dl[0]).hostname or "").lower()
+    is_hf_url = first_host == "huggingface.co" or first_host.endswith(".huggingface.co")
+    if is_hf_url and hf.load_token() is None and hf.probe_gated_url(entry.dl[0]):
+        raise HTTPException(
+            status_code=400,
+            detail="repo นี้ติด gate — ใส่ HF token ในช่อง 'ตรวจสอบ HF repo' แล้วกดตรวจสอบก่อน ระบบจะจำ token ไว้ดาวน์โหลด",
+        )
+
     targets = _download_targets(entry)
     job = get_download_manager().submit(entry.id, targets)
     return {"ok": True, "job": _job_to_api(job)}

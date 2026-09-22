@@ -101,3 +101,19 @@ session นี้ไม่ได้เพิ่มฟีเจอร์ เป�
   3. commit/push งานนี้ (ยังไม่ได้ commit; working tree มีของ session ก่อนค้างอยู่ด้วย: `engines/vllm.sh`, `services/aria2.sh`)
 
 - **Suggested Skills**: `project-hygiene` · `remember`
+
+## [2026-09-22 21:31 → 2026-09-22 22:05] hotfix ดาวน์โหลด repo gated + เตรียมงาน upgrade
+
+- **สิ่งที่ทำ**: hotfix 2 บั๊ก (ดู `fix.md` 2 entry `[2026-09-22 22:05]`) · deploy `:9001` · explore ครบ 3 ด้านสำหรับฟีเจอร์ "upgrade llama.cpp / engine / software" (ผลสรุปอยู่ท้าย plan file ของ session — ยังไม่ได้ brainstorm/PRD)
+
+- **สถานะระบบล่าสุด (2026-09-22 22:05)**:
+  - `:9001` deploy hotfix แล้ว
+  - job ดาวน์โหลด Navin 2 ตัว cancel แล้ว
+  - ยังไม่มี `hf_token` บน DGX
+
+- **งานค้าง / ควรทำ session ถัดไป**:
+  1. พี่หนุ่มใส่ HF token → ตรวจสอบ → โหลด `…-AD-4.27-mainline` (ห้ามเลือก `main`) → ลบ entry `main` ออกจากคลัง
+  2. **ฟีเจอร์ upgrade** (คำขอของพี่หนุ่ม 2026-09-22 21:31): brainstorm → PRD → HTML plan → implement; ของเดิมมี `POST /api/engines/upgrade` (llamacpp เท่านั้น, ไม่เคยยิง pack จริง), `software.py` upgrade/rollback, ไม่มี UI ซอฟต์แวร์, vLLM/ds4/ComfyUI ไม่มี path upgrade; คำถามเปิด: dl.php ยังใช้ได้ไหม/มี endpoint บอกรุ่นล่าสุดไหม, scope ครอบคลุมอะไรบ้าง, restart engine หลังอัปหรือไม่, auth ของปุ่ม upgrade
+  3. commit/push งาน hotfix
+
+- **Suggested Skills**: `superpowers:brainstorming` (ต่อเรื่อง upgrade) · `new-project-setup` · `project-hygiene`

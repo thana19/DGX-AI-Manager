@@ -29,6 +29,7 @@ from server.hf import (
     list_files,
     load_token,
     normalize_repo_id,
+    probe_gated_url,
     quant_label,
     resolve_url,
     save_token,
@@ -303,6 +304,39 @@ def test_group_quants_navin_qwen38_mmproj_is_vision_companion_not_a_group():
 )
 def test_is_gated(repo_json, expected):
     assert is_gated(repo_json) is expected
+
+
+# ---------------------------------------------------------------------------
+# probe_gated_url — เช็คเร็ว ๆ ก่อน submit ดาวน์โหลดว่า URL นี้จะ 401/403 แน่ไหม (hotfix)
+# HEAD ไม่ตาม redirect · เน็ตพัง/timeout → False (ปล่อยผ่านให้ aria2 ไปเจอเองตอนโหลดจริง)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_probe_gated_url_401_403_returns_true(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "HEAD"
+        return httpx.Response(status)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert probe_gated_url("https://huggingface.co/some/gated-repo/resolve/main/f.gguf", client=client) is True
+
+
+@pytest.mark.parametrize("status", [200, 302])
+def test_probe_gated_url_200_302_returns_false(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert probe_gated_url("https://huggingface.co/some/open-repo/resolve/main/f.gguf", client=client) is False
+
+
+def test_probe_gated_url_exception_returns_false():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert probe_gated_url("https://huggingface.co/some/repo/resolve/main/f.gguf", client=client) is False
 
 
 # ---------------------------------------------------------------------------

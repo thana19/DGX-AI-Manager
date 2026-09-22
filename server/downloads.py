@@ -147,14 +147,29 @@ class Aria2Client:
         self._client = client or httpx.Client()
 
     def call(self, method: str, params: list) -> Any:
+        """ยิง JSON-RPC ไปหา aria2 — แปลง error ทุกแบบให้เป็น Aria2Error เดียว ไม่มี exception ชนิดอื่นหลุดออกไป
+
+        ⚠️ ของจริงบน DGX: aria2 ตอบ error กลับมาพร้อม HTTP 400 (ไม่ใช่ 200) — ต้องอ่าน body
+        หา `"error"` **ก่อน** เช็ค status code เพราะเดิมเรียก raise_for_status() ก่อนอ่าน body
+        ทำให้ได้ httpx.HTTPStatusError หลุดออกจาก call() แทน ผู้เรียก (refresh) ที่ดัก `except Aria2Error`
+        อย่างเดียวเลยพลาด exception ทั้งก้อน
+        """
         rpc_params = ([f"token:{self.secret}"] + list(params)) if self.secret else list(params)
         payload = {"jsonrpc": "2.0", "id": "1", "method": method, "params": rpc_params}
-        resp = self._client.post(self.url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        if "error" in data:
-            msg = data["error"].get("message", str(data["error"]))
+        try:
+            resp = self._client.post(self.url, json=payload)
+        except httpx.HTTPError as e:  # connect/timeout ก่อนได้ response กลับมาเลยด้วยซ้ำ
+            raise Aria2Error(str(e)) from e
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and "error" in data:
+            err = data["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
             raise Aria2Error(msg)
+        if not (200 <= resp.status_code < 300):
+            raise Aria2Error(f"aria2 ตอบ HTTP {resp.status_code}")
         return data["result"]
 
     def add_uri(self, url: str, dir: str, out: str, headers: list[str] | None = None) -> str:
@@ -380,8 +395,14 @@ class DownloadManager:
     # -- refresh ------------------------------------------------------------
 
     def refresh(self) -> None:
-        """ดึงสถานะจาก aria2 มาอัปเดตทุก job · จบ job ปัจจุบันแล้วเริ่มตัวถัดไปในคิวอัตโนมัติ"""
+        """ดึงสถานะจาก aria2 มาอัปเดตทุก job · จบ job ปัจจุบันแล้วเริ่มตัวถัดไปในคิวอัตโนมัติ
+
+        job ที่จบไปแล้ว (DONE/ERROR/CANCELLED) ข้ามไปเลย ไม่ถาม aria2 อีก — ทั้งลด RPC เปล่า ๆ
+        และตัดปัญหา gid เก่าที่หายไปจาก aria2 ตั้งแต่ restart (ดู hotfix 2026-09-22)
+        """
         for job in self._jobs.values():
+            if not self._job_occupies_slot(job):
+                continue
             speed_total = 0
             for f in job.files:
                 if f.gid is None:
@@ -390,7 +411,11 @@ class DownloadManager:
                     status = self._aria2.tell_status(f.gid)
                 except Aria2Error as e:
                     f.state = DownloadState.ERROR
-                    f.error = f"เชื่อมต่อ aria2 ไม่ได้ ({e}) — เช็คว่า aria2c daemon ยังทำงานอยู่หรือไม่"
+                    if "not found" in str(e).lower():
+                        # aria2 ไม่รู้จัก gid นี้แล้ว (เช่น aria2 ถูก restart แล้วลืม state เดิม)
+                        f.error = "aria2 ไม่รู้จักงานนี้แล้ว (aria2 อาจถูก restart) — กดดาวน์โหลดใหม่"
+                    else:
+                        f.error = f"เชื่อมต่อ aria2 ไม่ได้ ({e}) — เช็คว่า aria2c daemon ยังทำงานอยู่หรือไม่"
                     continue
                 self._apply_status(f, status)
                 if f.state == DownloadState.ACTIVE:

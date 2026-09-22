@@ -684,6 +684,83 @@ def test_create_download_unknown_model_returns_404(client):
 
 
 # ---------------------------------------------------------------------------
+# /api/downloads — กัน submit repo ที่รู้อยู่แล้วว่าติด gate (hotfix)
+# ---------------------------------------------------------------------------
+
+
+def test_create_download_huggingface_no_token_gated_ตอบ_400_ไม่_submit(client, monkeypatch):
+    from server.downloads import DownloadJob, DownloadState
+
+    mgr = main.get_download_manager()
+    calls = []
+    monkeypatch.setattr(mgr, "submit", lambda *a, **k: calls.append((a, k)) or DownloadJob(
+        id="j1", model_id="ds4-flash-unsloth-iq2xxs", files=[], created_at=0.0, state=DownloadState.QUEUED,
+    ))
+
+    seen_urls = []
+
+    def fake_probe(url: str, *, client: httpx.Client | None = None) -> bool:
+        seen_urls.append(url)
+        return True
+
+    monkeypatch.setattr(hf, "probe_gated_url", fake_probe)
+
+    # entry นี้ไม่มี token ใน state (client fixture ชี้ AISERVER2_STATE ไปที่ tmp ว่าง)
+    resp = client.post("/api/downloads", json={"model_id": "ds4-flash-unsloth-iq2xxs"})
+
+    assert resp.status_code == 400
+    assert "token" in resp.json()["detail"]
+    assert calls == []  # submit ต้องไม่ถูกเรียก
+    assert seen_urls == [
+        "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_XXS/DeepSeek-V4-Flash-0731-UD-IQ2_XXS-00001-of-00003.gguf"
+    ]  # ตรวจแค่ URL แรกพอ
+
+
+def test_create_download_huggingface_มี_token_ไม่เรียก_probe_และ_submit(client, monkeypatch):
+    from server.downloads import DownloadJob, DownloadState
+
+    hf.save_token("hf_abc123")  # มี token แล้ว — ไม่ต้องเสี่ยงยิง probe เลย
+
+    mgr = main.get_download_manager()
+    calls = []
+    monkeypatch.setattr(mgr, "submit", lambda *a, **k: calls.append((a, k)) or DownloadJob(
+        id="j1", model_id="ds4-flash-unsloth-iq2xxs", files=[], created_at=0.0, state=DownloadState.QUEUED,
+    ))
+
+    probe_calls = []
+    monkeypatch.setattr(hf, "probe_gated_url", lambda *a, **k: probe_calls.append((a, k)) or True)
+
+    resp = client.post("/api/downloads", json={"model_id": "ds4-flash-unsloth-iq2xxs"})
+
+    assert resp.status_code == 200
+    assert probe_calls == []  # มี token แล้ว ไม่ต้องเช็ค gate ก่อน
+    assert len(calls) == 1
+
+
+def test_create_download_url_ไม่ใช่_huggingface_ไม่เรียก_probe(client, monkeypatch):
+    from server.downloads import DownloadJob, DownloadState
+
+    resp = client.post("/api/models", json={
+        "id": "test-non-hf-model", "name": "Test", "engine": "llamacpp",
+        "path": "~/models/gguf/test/test.gguf", "dl": ["https://example.com/model.gguf"],
+    })
+    assert resp.status_code == 200
+
+    probe_calls = []
+    monkeypatch.setattr(hf, "probe_gated_url", lambda *a, **k: probe_calls.append((a, k)) or True)
+
+    mgr = main.get_download_manager()
+    monkeypatch.setattr(mgr, "submit", lambda *a, **k: DownloadJob(
+        id="j1", model_id="test-non-hf-model", files=[], created_at=0.0, state=DownloadState.QUEUED,
+    ))
+
+    resp = client.post("/api/downloads", json={"model_id": "test-non-hf-model"})
+
+    assert resp.status_code == 200
+    assert probe_calls == []
+
+
+# ---------------------------------------------------------------------------
 # /api/engines · /api/software
 # ---------------------------------------------------------------------------
 

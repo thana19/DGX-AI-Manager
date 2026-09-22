@@ -149,6 +149,26 @@ def is_gated(repo_json: dict) -> bool:
     return gated in ("auto", "manual", True)
 
 
+def probe_gated_url(url: str, *, client: httpx.Client | None = None) -> bool:
+    """เช็คเร็ว ๆ (HEAD) ว่า URL ดาวน์โหลดนี้จะโดน 401/403 แน่ไหม ก่อนส่งให้ aria2 โหลดจริง
+
+    ใช้ก่อน submit /api/downloads กันยิง job ที่รู้อยู่แล้วว่าจะพัง (ไม่มี HF token + repo ติด gate)
+    ⚠️ ไม่ตาม redirect (follow_redirects=False) — แค่เช็ค auth ไม่ต้องโหลดไฟล์จริงหรือตาม CDN
+    เน็ตพัง/timeout/error อื่น ๆ → คืน False (ปล่อยผ่านให้ aria2 ไปรายงาน error เองตอนโหลดจริง
+    ดีกว่าบล็อกผู้ใช้เพราะปัญหาเน็ตชั่วคราวของเราเอง)
+    """
+    own_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        resp = http_client.head(url, follow_redirects=False, timeout=10.0)
+        return resp.status_code in (401, 403)
+    except httpx.HTTPError:
+        return False
+    finally:
+        if own_client:
+            http_client.close()
+
+
 def token_path() -> str:
     """path ของไฟล์เก็บ HF token — ~/.aiserver2/hf_token (หรือ AISERVER2_STATE ตอน test)"""
     return paths.state("hf_token")
