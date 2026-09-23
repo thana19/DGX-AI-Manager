@@ -452,6 +452,12 @@ def list_downloads() -> dict[str, Any]:
     return {"jobs": [_job_to_api(j) for j in mgr.jobs()]}
 
 
+@app.post("/api/downloads/clear")
+def clear_failed_downloads() -> dict[str, Any]:
+    removed = get_download_manager().clear_failed()
+    return {"ok": True, "removed": removed}
+
+
 @app.post("/api/downloads/{job_id}/{action}")
 def control_download(job_id: str, action: str) -> dict[str, Any]:
     mgr = get_download_manager()

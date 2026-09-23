@@ -116,6 +116,15 @@ class FakeAria2Server:
             gid = params[0]
             self._jobs[gid]["status"] = "removed"
             result = gid
+        elif method == "aria2.removeDownloadResult":
+            gid = params[0]
+            if gid not in self._jobs:
+                return httpx.Response(
+                    400,
+                    json={"id": body["id"], "jsonrpc": "2.0", "error": {"code": 1, "message": f"GID {gid} is not found"}},
+                )
+            del self._jobs[gid]
+            result = "OK"
         else:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32601, "message": f"method not found: {method}"}})
 
@@ -584,6 +593,104 @@ def test_cancel_starts_next_queued_job(tmp_path):
     job2 = mgr.get(job2.id)
     assert job2.state == DownloadState.ACTIVE
     assert job2.files[0].gid is not None
+
+
+# ---------------------------------------------------------------------------
+# clear_failed — ล้างงานที่ไม่สำเร็จ (error/cancelled) แต่ไม่แตะไฟล์บนดิสก์
+# ---------------------------------------------------------------------------
+
+
+def test_clear_failed_removes_only_error_and_cancelled_jobs(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"))
+
+    def make_job(job_id: str, state: DownloadState, gid: str | None = None) -> DownloadJob:
+        f = FileProgress(
+            url="http://example.com/x.gguf", dest=str(tmp_path / f"{job_id}.gguf"), gid=gid,
+            total_bytes=0, done_bytes=0, state=state, error=None,
+        )
+        return DownloadJob(id=job_id, model_id="m", files=[f], created_at=1.0, state=state)
+
+    for job_id, state, gid in [
+        ("done1", DownloadState.DONE, None),
+        ("active1", DownloadState.ACTIVE, "gid-active"),
+        ("queued1", DownloadState.QUEUED, None),
+        ("paused1", DownloadState.PAUSED, "gid-paused"),
+        ("error1", DownloadState.ERROR, None),
+        ("cancelled1", DownloadState.CANCELLED, None),
+    ]:
+        mgr._jobs[job_id] = make_job(job_id, state, gid)
+
+    removed = mgr.clear_failed()
+
+    assert removed == 2
+    remaining_ids = {j.id for j in mgr.jobs()}
+    assert remaining_ids == {"done1", "active1", "queued1", "paused1"}
+
+
+def test_clear_failed_calls_remove_download_result_and_ignores_unknown_gid(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"))
+
+    job = mgr.submit("model-a", [("http://example.com/a.gguf", str(tmp_path / "a.gguf"))])
+    gid = job.files[0].gid
+    job.files[0].state = DownloadState.ERROR
+    job.state = DownloadState.ERROR
+    server.forget(gid)  # จำลอง aria2 restart แล้วลืม gid เก่า — removeDownloadResult ต้องไม่พังตาม
+
+    removed = mgr.clear_failed()
+
+    assert removed == 1
+    assert mgr.get(job.id) is None
+    assert ("aria2.removeDownloadResult", [gid]) in server.calls
+
+
+def test_clear_failed_state_file_no_longer_has_removed_jobs_after_reload(tmp_path):
+    state_path = str(tmp_path / "downloads.json")
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=state_path)
+
+    job = mgr.submit("model-a", [("http://example.com/a.gguf", str(tmp_path / "a.gguf"))])
+    job.files[0].state = DownloadState.CANCELLED
+    job.state = DownloadState.CANCELLED
+
+    mgr.clear_failed()
+
+    mgr2 = DownloadManager(client, state_path=state_path)
+    assert mgr2.get(job.id) is None
+
+
+def test_clear_failed_resets_running_job_id_and_advances_queue(tmp_path):
+    server = FakeAria2Server()
+    client = _client(server)
+    mgr = DownloadManager(client, state_path=str(tmp_path / "downloads.json"))
+
+    error_file = FileProgress(
+        url="http://example.com/a.gguf", dest=str(tmp_path / "a.gguf"), gid=None,
+        total_bytes=100, done_bytes=50, state=DownloadState.ERROR, error="boom",
+    )
+    error_job = DownloadJob(id="err1", model_id="model-a", files=[error_file], created_at=1.0, state=DownloadState.ERROR)
+    mgr._jobs[error_job.id] = error_job
+    mgr._running_job_id = error_job.id  # จำลองว่า error job นี้เพิ่งเคยครอบครองคิวอยู่
+
+    queued_file = FileProgress(
+        url="http://example.com/b.gguf", dest=str(tmp_path / "b.gguf"), gid=None,
+        total_bytes=0, done_bytes=0, state=DownloadState.QUEUED, error=None,
+    )
+    queued_job = DownloadJob(id="q1", model_id="model-b", files=[queued_file], created_at=2.0, state=DownloadState.QUEUED)
+    mgr._jobs[queued_job.id] = queued_job
+
+    removed = mgr.clear_failed()
+
+    assert removed == 1
+    assert mgr.get("err1") is None
+    assert mgr._running_job_id == "q1"
+    started_job = mgr.get("q1")
+    assert started_job.state == DownloadState.ACTIVE
+    assert started_job.files[0].gid is not None
 
 
 # ---------------------------------------------------------------------------

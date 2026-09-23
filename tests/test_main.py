@@ -796,6 +796,21 @@ def test_create_download_url_ไม่ใช่_huggingface_ไม่เรี�
 
 
 # ---------------------------------------------------------------------------
+# /api/downloads/clear — ล้างงานที่ไม่สำเร็จ
+# ---------------------------------------------------------------------------
+
+
+def test_clear_failed_downloads(client, monkeypatch):
+    mgr = main.get_download_manager()
+    monkeypatch.setattr(mgr, "clear_failed", lambda: 3)
+
+    resp = client.post("/api/downloads/clear")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "removed": 3}
+
+
+# ---------------------------------------------------------------------------
 # /api/engines · /api/software
 # ---------------------------------------------------------------------------
 

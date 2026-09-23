@@ -195,6 +195,10 @@ class Aria2Client:
     def remove(self, gid: str) -> None:
         self.call("aria2.remove", [gid])
 
+    def remove_download_result(self, gid: str) -> None:
+        """ลบผลลัพธ์ของ gid ที่จบไปแล้ว (error/cancelled) ออกจากความจำของ aria2 daemon"""
+        self.call("aria2.removeDownloadResult", [gid])
+
 
 # ---------------------------------------------------------------------------
 # แปลง state ไป/กลับ JSON สำหรับ persist ลง disk
@@ -499,3 +503,27 @@ class DownloadManager:
         self._advance_queue()
         self._save_state()
         return True
+
+    def clear_failed(self) -> int:
+        """ลบ job ที่ ERROR/CANCELLED ออกจากลิสต์ — ไม่แตะไฟล์บนดิสก์ (ต่างจาก cancel)
+
+        best-effort บอก aria2 ให้ลืม gid พวกนี้ด้วย — ไม่บังคับต้องสำเร็จ เพราะ gid อาจไม่รู้จัก
+        แล้ว (aria2 restart) หรือ daemon ตายอยู่ ก็ไม่ควรทำให้ clear ล้มเหลวไปด้วย
+        """
+        to_remove = [
+            job for job in self._jobs.values()
+            if job.state in (DownloadState.ERROR, DownloadState.CANCELLED)
+        ]
+        for job in to_remove:
+            for f in job.files:
+                if f.gid is not None:
+                    try:
+                        self._aria2.remove_download_result(f.gid)
+                    except Aria2Error:
+                        pass  # gid ไม่รู้จักหรือ daemon ตาย — ไม่ต้องให้ clear ล้มเหลวเพราะเหตุนี้
+            del self._jobs[job.id]
+            if self._running_job_id == job.id:
+                self._running_job_id = None
+        self._advance_queue()
+        self._save_state()
+        return len(to_remove)

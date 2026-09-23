@@ -31,6 +31,7 @@ A web-based LLM model & engine manager for the DGX Spark (GB10) — one page for
 - Download queue backed by aria2 — per-file progress, speed, and ETA
 - Pause / resume / cancel mid-download
 - Separate **In progress / Completed** tabs — finished jobs move over automatically, and the library card becomes ready to load into memory right away
+- Clear failed downloads (error/cancelled) button to remove them from the list without deleting files on disk
 
 ### 🔌 Built-in API guide
 - A modal with ready-to-copy API examples for connecting external clients

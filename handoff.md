@@ -128,3 +128,14 @@ session นี้ไม่ได้เพิ่มฟีเจอร์ เป�
   3. commit/push งานนี้
   4. (ไอเดีย) ปุ่ม "ตรวจสอบใหม่" บนการ์ดเพื่อเติม arch ให้ entry ที่ arch ว่าง
 - **Suggested Skills**: `superpowers:brainstorming` · `project-hygiene`
+
+## [2026-09-23 07:30 → 2026-09-23 07:40] ปุ่มล้างงานดาวน์โหลดที่ไม่สำเร็จ
+
+- **สิ่งที่ทำ**: เพิ่ม API `POST /api/downloads/clear` → `DownloadManager.clear_failed()` · เพิ่มปุ่ม 🧹 ในแถวแท็บดาวน์โหลด · อ้าง `TESTING.md` entry `[2026-09-23 07:40]`
+- **สถานะ**: `:9001` deploy แล้ว · HF token ของพี่หนุ่มยัง 403 — ยังไม่ได้กด Agree บนหน้า repo
+- **งานค้าง / ควรทำ session ถัดไป**:
+  1. พี่หนุ่มกดล้าง 5 รายการเอง
+  2. กด Agree บน HF แล้วโหลด mainline
+  3. commit/push
+  4. ฟีเจอร์ upgrade (ยังไม่เริ่ม brainstorm)
+- **Suggested Skills**: `superpowers:brainstorming` · `project-hygiene`

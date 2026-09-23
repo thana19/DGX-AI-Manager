@@ -178,3 +178,33 @@
 
 - ยังโหลดจริงไม่ได้จนกว่าบัญชี HF จะกด Agree
 - token ที่ใช้เป็น fine-grained ต้องมีสิทธิ์ "Read access to contents of all public gated repos" หรือใช้ token ชนิด Read
+
+## [2026-09-23 07:40] ปุ่มล้างงานดาวน์โหลดที่ไม่สำเร็จ
+
+### ภาพรวม
+
+| รายการ | ผล |
+|---|---|
+| Unit test | 356/356 ผ่าน (เดิม 351 + ใหม่ 5) |
+| Deploy | `:9001` UP |
+
+### Checklist
+
+| ข้อ | สิ่งที่ทดสอบ | ผล | หลักฐาน |
+|---|---|---|---|
+| 1 | Unit test ทั้งชุด | ✅ | 356/356 ผ่าน (ใหม่ 5: `clear_failed` ลบเฉพาะ error+cancelled คง done/active/queued/paused · เรียก `aria2.removeDownloadResult` และไม่ล้มเมื่อ gid ไม่รู้จัก · state file ไม่มี job ที่ลบหลัง reload · reset running job + คิวเดินต่อ · endpoint `POST /api/downloads/clear` ตอบ `{ok, removed}`) |
+| 2 | Deploy `:9001` | ✅ | UP (`2026-09-23 07:38 bash deploy.sh`) |
+| 3 | `GET /api/downloads/clear` | ✅ | ตอบ 405 (route มีจริง) |
+| 4 | หน้าเว็บมี `#btn-clear-failed` | ✅ | พบ element ในหน้า |
+
+### Deploy log
+
+| เวลา | action | result |
+|---|---|---|
+| 2026-09-23 07:38 | `bash deploy.sh` | UP |
+
+### หมายเหตุ
+
+- ยังไม่ได้กดล้างจริง (พี่หนุ่มจะกดเองบนหน้าเว็บ — ตอนนี้มี job ไม่สำเร็จค้าง 5 รายการ)
+- ปุ่มโชว์เฉพาะเมื่อมี job error/cancelled
+- ไม่ลบไฟล์บนดิสก์

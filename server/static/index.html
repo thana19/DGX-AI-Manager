@@ -413,6 +413,7 @@
     <div class="tabs" id="downloads-tabs">
       <button type="button" class="tab-btn active" data-dltab="active">กำลังดำเนินการ</button>
       <button type="button" class="tab-btn" data-dltab="done">จบแล้ว</button>
+      <button type="button" class="small" id="btn-clear-failed" style="margin-left:auto; display:none;">🧹 ล้างงานที่ไม่สำเร็จ</button>
     </div>
     <div id="downloads-list"></div>
     <div id="downloads-status" class="empty-state" style="display:none;"></div>
@@ -1622,6 +1623,17 @@
       if(doneBtn) doneBtn.textContent = "จบแล้ว (" + finished.length + ")";
     }
 
+    var failedCount = state.lastJobs.filter(function(j){ return j.state === "error" || j.state === "cancelled"; }).length;
+    var clearBtn = document.getElementById("btn-clear-failed");
+    if(clearBtn){
+      if(failedCount > 0){
+        clearBtn.style.display = "";
+        clearBtn.textContent = "🧹 ล้างงานที่ไม่สำเร็จ (" + failedCount + ")";
+      }else{
+        clearBtn.style.display = "none";
+      }
+    }
+
     var currentJobs = state.downloadTab === "done" ? finished : unfinished;
 
     var list = document.getElementById("downloads-list");
@@ -1650,6 +1662,22 @@
       downloadsTabsEl.querySelectorAll(".tab-btn").forEach(function(b){ b.classList.remove("active"); });
       btn.classList.add("active");
       renderDownloads(state.lastJobs);
+    });
+  }
+
+  var clearFailedBtn = document.getElementById("btn-clear-failed");
+  if(clearFailedBtn){
+    clearFailedBtn.addEventListener("click", async function(){
+      clearFailedBtn.disabled = true;
+      try{
+        var res = await apiFetch("/api/downloads/clear", {method: "POST"});
+        showMsg("ล้างงานที่ไม่สำเร็จแล้ว " + res.removed + " รายการ", "ok");
+        await pollDownloads();
+      }catch(e){
+        showMsg(e.message, "error");
+      }finally{
+        clearFailedBtn.disabled = false;
+      }
     });
   }
 
