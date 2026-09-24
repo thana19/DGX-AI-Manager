@@ -139,3 +139,14 @@ session นี้ไม่ได้เพิ่มฟีเจอร์ เป�
   3. commit/push
   4. ฟีเจอร์ upgrade (ยังไม่เริ่ม brainstorm)
 - **Suggested Skills**: `superpowers:brainstorming` · `project-hygiene`
+
+## [2026-09-23 07:40 → 2026-09-24 21:50] ปิด session — สรุปสถานะ + เก็บผลสำรวจ upgrade
+
+- **สิ่งที่ทำ**: เก็บผลสำรวจฟีเจอร์ upgrade ลง `docs/notes/2026-09-22-upgrade-exploration.md` (อ่านก่อนเริ่ม brainstorm) · งาน session นี้ทั้งหมดอยู่ใน commit `90af862` (GGUF fallback + gated token), `22b09cd` (hotfix refresh/gated guard), `145cf85` (403 reason/แท็บ/arch ว่าง), `9727647` (ปุ่มล้าง) — รายละเอียดใน `fix.md` และ `TESTING.md` entries 2026-09-22/23
+- **สถานะระบบล่าสุด (2026-09-24 21:48)**: `:9001` = commit `9727647` · `~/.aiserver2/hf_token` ยังเป็น token เดิม (บันทึก 2026-09-22 22:15) และ HF ยังตอบ **403** สำหรับ repo Navin → ยังไม่ได้กด Agree · โฟลเดอร์ `~/models/gguf/Qwen3.8-Flash-Next-Uncensored-AD-4.27-GGUF/` ยังว่าง (0 ไฟล์)
+- **งานค้าง / ควรทำ session ถัดไป**:
+  1. พี่หนุ่มกด "Agree and access repository" บนหน้า repo ด้วยบัญชี `anaht` (+ token fine-grained ต้องมีสิทธิ์ gated repos หรือใช้ token ชนิด Read แล้วใส่ใหม่) → กดโหลด **mainline** → ลบ entry `…-main` ออกจากคลัง
+  2. กดปุ่ม 🧹 ล้างงานที่ไม่สำเร็จ ถ้ายังไม่ได้กด
+  3. **ฟีเจอร์ upgrade** — เริ่มจาก `superpowers:brainstorming` (architectural) โดยอ่าน `docs/notes/2026-09-22-upgrade-exploration.md` ก่อน คำถามแรกที่ต้องถามพี่หนุ่ม: `aiserver.in.th/dl.php` ยังใช้ได้ไหม และมีวิธีถาม "รุ่นล่าสุด" ก่อนดาวน์โหลดไหม
+  4. ไอเดียค้าง: ปุ่ม "ตรวจสอบใหม่" บนการ์ดเพื่อเติม arch ให้ entry ที่ arch ว่าง
+- **Suggested Skills**: `superpowers:brainstorming` · `new-project-setup` (PRD/HTML plan ก่อน implement) · `project-hygiene`
