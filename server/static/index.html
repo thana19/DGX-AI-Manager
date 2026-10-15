@@ -1077,6 +1077,9 @@
       actions += '<button class="small primary btn-activate-toggle" data-id="' + escapeHtml(m.id) + '"' +
         (blockLoad ? " disabled" : "") + '>▶ โหลดขึ้นแรม</button>';
     }
+    if(!m.arch || !m.ctx_train){
+      actions += '<button class="small btn-inspect" data-id="' + escapeHtml(m.id) + '">🔍 ตรวจสอบใหม่</button>';
+    }
     if(m.source === "user"){
       actions += '<button class="small danger btn-delete" data-id="' + escapeHtml(m.id) + '">🗑 ลบ</button>';
     }
@@ -1119,6 +1122,9 @@
 
     var delBtn = card.querySelector(".btn-delete");
     if(delBtn) delBtn.addEventListener("click", function(){ deleteModel(m.id, delBtn); });
+
+    var inspBtn = card.querySelector(".btn-inspect");
+    if(inspBtn) inspBtn.addEventListener("click", function(){ inspectModel(m.id, inspBtn); });
 
     var upBtn = card.querySelector(".btn-upgrade");
     if(upBtn) upBtn.addEventListener("click", function(){ upgradeEngine(m.engine, upBtn); });
@@ -1243,6 +1249,21 @@
     }catch(e){
       showMsg(e.message, "error");
       btn.disabled = false;
+    }
+  }
+
+  async function inspectModel(id, btn){
+    btn.disabled = true;
+    var origText = btn.textContent;
+    btn.textContent = "กำลังตรวจ…";
+    try{
+      var res = await apiFetch("/api/models/" + encodeURIComponent(id) + "/inspect", {method: "POST"});
+      showMsg("ตรวจสอบแล้ว: arch=" + (res.arch || "-") + " ctx_train=" + (res.ctx_train || "-"), "ok");
+      await loadModels();
+    }catch(e){
+      showMsg(e.message, "error");
+      btn.disabled = false;
+      btn.textContent = origText;
     }
   }
 

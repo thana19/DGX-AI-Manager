@@ -160,3 +160,14 @@ session นี้ไม่ได้เพิ่มฟีเจอร์ เป�
   2. ไอเดีย: ใส่ `Cache-Control: no-cache` ให้ index.html กัน browser cache เก่า
   3. งานค้างเดิมยังเปิดอยู่: กด Agree ที่ HF repo Navin แล้วโหลด mainline · brainstorm ฟีเจอร์ upgrade · ไอเดียปุ่ม "ตรวจสอบใหม่" (re-verify arch) บนการ์ด
 - **Suggested Skills**: `superpowers:brainstorming` · `project-hygiene`
+
+## [2026-10-15 17:10 → 2026-10-16 00:46] ปิดงานค้างเก่า: ลบโฟลเดอร์ Navin + ปุ่มตรวจสอบใหม่
+
+- **สิ่งที่ทำ**: ลบโฟลเดอร์ว่าง `~/models/gguf/Qwen3.8-Flash-Next-Uncensored-AD-4.27-GGUF/` บน DGX (rmdir) · job ดาวน์โหลดที่ไม่สำเร็จถูกล้างแล้ว (เหลือ 5 job สถานะ done) → งานค้างเก่า "กด Agree ที่ HF Navin" และ "🧹 ล้าง" **ปิดแล้ว** (เลิกใช้ repo Navin · ใช้ vendor `qwen3.8-flash-next-udq2` ของ unsloth) · เพิ่มปุ่ม 🔍 ตรวจสอบใหม่: `server/facts.py` (`inspect_local`/`inspect_remote`/`InspectError`) · overlay `~/.aiserver2/model-facts.json` ใน `server/catalog.py` · `POST /api/models/{id}/inspect` (404/409/502) · ปุ่มบนการ์ด — อ้าง `TESTING.md` entry `[2026-10-15 22:40]` · commit: `feat: ปุ่ม 🔍 ตรวจสอบใหม่ ...` (ดู `git log -1`)
+- **สถานะระบบล่าสุด**: `:9001` deploy 2026-10-15 22:39 · test 383/383 · inspect จริงสำเร็จกับ `qwen36-td-q2k` และ `qwen38-nvfp4-vllm` · ยังไม่ได้ทดสอบ `inspect_remote` กับ HF จริง และยังไม่ได้กดปุ่มในเบราว์เซอร์
+- **งานค้าง / ควรทำ session ถัดไป**:
+  1. ทดสอบ vLLM บนพอร์ตที่ไม่ใช่ 8000 กับ docker จริง (ต้องให้พี่หนุ่มอนุญาตก่อน)
+  2. ใส่ `Cache-Control: no-cache` ให้ index.html
+  3. **ฟีเจอร์ upgrade** — เริ่มจาก brainstorming โดยอ่าน `docs/notes/2026-09-22-upgrade-exploration.md` ก่อน คำถามแรก: `aiserver.in.th/dl.php` ยังใช้ได้ไหม
+  4. (ไม่บังคับ) rename `catalog._write_user_raw` → `_write_json_atomic`
+- **Suggested Skills**: `superpowers:brainstorming` · `new-project-setup` · `project-hygiene`

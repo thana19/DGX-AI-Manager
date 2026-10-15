@@ -243,3 +243,35 @@
 - เบราว์เซอร์ cache index.html เก่า ต้อง Cmd+Shift+R (ไอเดีย: ใส่ `Cache-Control: no-cache` — ยังไม่ได้ทำ)
 - vLLM บนพอร์ตที่ไม่ใช่ 8000 ยังไม่ได้ทดสอบกับ docker จริง
 - log ของ vLLM ยังเป็นไฟล์เดียว `vllm.log`
+
+## [2026-10-15 22:40] ปุ่มตรวจสอบใหม่ (เติม arch/ctx_train)
+
+### ภาพรวม
+
+| รายการ | ผล |
+|---|---|
+| Unit test | 383/383 ผ่าน (เดิม 369 + ใหม่ 14: `tests/test_facts.py` + endpoint 4 ใน `tests/test_main.py`) |
+| Deploy | `:9001` UP |
+
+### Checklist
+
+| ข้อ | สิ่งที่ทดสอบ | ผล | หลักฐาน |
+|---|---|---|---|
+| 1 | Unit test ทั้งชุด | ✅ | 383/383 |
+| 2 | `POST /api/models/qwen36-td-q2k/inspect` (ไฟล์ GGUF ในเครื่อง) | ✅ | arch `qwen35moe` · ctx 262144 · source local · compat ok (llamacpp build 10696) |
+| 3 | `POST /api/models/qwen38-nvfp4-vllm/inspect` (โฟลเดอร์ config.json) | ✅ | arch `Qwen3_5ForConditionalGeneration` · ctx 262144 (จาก `text_config`) · source local · compat ok (vllm requires) |
+| 4 | `~/.aiserver2/model-facts.json` | ✅ | มีทั้ง 2 id · `source` ของทั้งคู่ยังเป็น vendor |
+| 5 | `inspect_remote` กับ HF จริง | ⏳ | ยังไม่ได้ทดสอบ (ครอบด้วย unit test เท่านั้น) |
+| 6 | กดปุ่มในเบราว์เซอร์ | ⏳ | ยังไม่ได้กด — ทดสอบผ่าน API อย่างเดียว |
+
+### Deploy log
+
+| เวลา | action | result |
+|---|---|---|
+| 2026-10-15 22:39 | `bash deploy.sh` | UP |
+
+### หมายเหตุ
+
+- ข้อมูลที่ตรวจเก็บเป็น overlay ที่ `~/.aiserver2/model-facts.json` — `catalog.yaml` ไม่ถูกแตะ · เติมเฉพาะ field ที่เป็น None
+- ปุ่มโชว์บนการ์ดเมื่อ `!m.arch || !m.ctx_train` และโหลดรายการใหม่หลังตรวจ
+- nit: `save_fact` ใช้ `catalog._write_user_raw` (type: ignore) — ควร rename เป็น `_write_json_atomic` ภายหลัง

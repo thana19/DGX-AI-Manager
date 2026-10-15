@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server import catalog, engines, gguf, hf, instances, main, software
+from server import facts as facts_mod
 
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -1422,3 +1423,44 @@ def test_activate_vllm_ปฏิเสธเมื่อจะไปทับ_vl
     r = client.post("/api/activate", json={"id": "test-vllm-guard", "port": 8001})
     assert r.status_code == 409
     assert "8000" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# /api/models/{id}/inspect
+# ---------------------------------------------------------------------------
+
+
+def test_inspect_unknown_model_404(client):
+    assert client.post("/api/models/nope/inspect").status_code == 404
+
+
+def test_inspect_success_updates_list(client, tmp_path):
+    import shutil
+    f = tmp_path / "m.gguf"
+    shutil.copy(os.path.join(FIXTURES, "gguf_head_qwen35_262144.bin"), f)
+    client.post("/api/models", json={"id": "insp1", "name": "I", "engine": "llamacpp", "path": str(f)})
+
+    resp = client.post("/api/models/insp1/inspect")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"ok": True, "arch": "qwen35", "ctx_train": 262144, "source": "local"}
+
+    m = next(m for m in client.get("/api/models").json()["models"] if m["id"] == "insp1")
+    assert m["arch"] == "qwen35" and m["ctx_train"] == 262144
+    assert m["compat"]["status"] != "unknown"
+
+
+def test_inspect_not_ready_without_repo_returns_error(client):
+    client.post("/api/models", json={"id": "insp2", "name": "I", "engine": "llamacpp", "path": "~/nonexistent/x.gguf"})
+    resp = client.post("/api/models/insp2/inspect")
+    assert resp.status_code == 409
+    assert resp.json()["detail"]
+
+
+def test_inspect_remote_fallback(client, monkeypatch):
+    client.post("/api/models", json={
+        "id": "insp3", "name": "I", "engine": "llamacpp", "path": "~/nonexistent/x.gguf", "source_repo": "a/b"})
+    monkeypatch.setattr(facts_mod, "inspect_remote", lambda e, token=None: ("qwen35", 1234))
+    resp = client.post("/api/models/insp3/inspect")
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "hf"

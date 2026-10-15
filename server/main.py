@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import catalog, downloads, engines, gguf, hf, instances, paths, software
+from . import catalog, downloads, engines, facts, gguf, hf, instances, paths, software
 
 APP_VERSION = "2.0.0-phase1"
 DEFAULT_PORT = int(os.environ.get("AISERVER2_PORT", "9001"))
@@ -395,6 +395,29 @@ def delete_model(model_id: str) -> dict[str, Any]:
     if not catalog.remove_user_model(model_id):
         raise HTTPException(status_code=404, detail=f"ไม่พบโมเดล id={model_id} ใน user-models (ลบได้เฉพาะโมเดลที่ผู้ใช้เพิ่มเอง)")
     return {"ok": True}
+
+
+@app.post("/api/models/{model_id}/inspect")
+def inspect_model(model_id: str) -> dict[str, Any]:
+    """ตรวจ arch/ctx_train ใหม่ — อ่านจากไฟล์บนดิสก์ก่อน ไม่พร้อมค่อยถาม HF · เก็บใน overlay model-facts.json"""
+    entry = next((e for e in catalog.load_all() if e.id == model_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"ไม่พบโมเดล id={model_id}")
+
+    try:
+        if catalog.is_ready(entry):
+            arch, ctx_train = facts.inspect_local(entry)
+            source = "local"
+        elif entry.source_repo:
+            arch, ctx_train = facts.inspect_remote(entry)
+            source = "hf"
+        else:
+            raise HTTPException(status_code=409, detail="ไฟล์ยังไม่พร้อมบนดิสก์และไม่มี source_repo ให้ตรวจสอบ")
+    except facts.InspectError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    catalog.save_fact(model_id, {"arch": arch, "ctx_train": ctx_train})
+    return {"ok": True, "arch": arch, "ctx_train": ctx_train, "source": source}
 
 
 # ---------------------------------------------------------------------------

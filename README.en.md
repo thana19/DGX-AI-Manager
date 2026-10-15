@@ -28,6 +28,7 @@ A web-based LLM model & engine manager for the DGX Spark (GB10) — one page for
 - Pick a quant with its real file size shown before you commit to downloading
 - Reads the model architecture from the GGUF header via HTTP Range requests — know whether your engine can run it without downloading the whole file
 - Checks engine compatibility against the actually installed engine binary, not a hand-maintained table
+- 🔍 Re-inspect button on cards with a missing arch/context — reads the local file (or HF if not downloaded yet) and fills it in without touching the catalog
 
 ### ⬇ Download manager
 - Download queue backed by aria2 — per-file progress, speed, and ETA

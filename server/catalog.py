@@ -99,18 +99,64 @@ def load_user(path: str | None = None) -> list[ModelEntry]:
     return [ModelEntry(**m, source="user") for m in raw]
 
 
+def _facts_path(path: str | None) -> str:
+    return path or paths.state("model-facts.json")
+
+
+def load_facts(path: str | None = None) -> dict[str, dict[str, Any]]:
+    """อ่าน overlay model-facts.json ({model_id: {arch, ctx_train}}) — ไม่มี/พัง/โครงสร้างผิด = {} (ห้ามทำ catalog พัง)"""
+    p = _facts_path(path)
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def save_fact(model_id: str, fact: dict[str, Any], path: str | None = None) -> None:
+    """บันทึก arch/ctx_train ที่ตรวจเจอลง overlay (merge กับของเดิม · atomic) — ไม่แตะ catalog.yaml/user-models.json"""
+    p = _facts_path(path)
+    data = load_facts(p)
+    clean = {k: fact[k] for k in ("arch", "ctx_train") if fact.get(k) is not None}
+    data[model_id] = {**data.get(model_id, {}), **clean}
+    _write_user_raw(data, p)  # type: ignore[arg-type] — helper เขียน JSON atomic ใช้ร่วมกันได้
+
+
+def _apply_facts(entries: list[ModelEntry], facts: dict[str, dict[str, Any]]) -> list[ModelEntry]:
+    """เติมเฉพาะ field ที่ยังเป็น None — ค่าที่ตั้งใน catalog.yaml / user-models.json ชนะเสมอ · source ไม่เปลี่ยน"""
+    out = []
+    for e in entries:
+        fact = facts.get(e.id) or {}
+        update = {
+            k: fact[k] for k in ("arch", "ctx_train")
+            if getattr(e, k) is None and fact.get(k) is not None
+        }
+        if update:
+            try:
+                e = ModelEntry(**{**e.model_dump(), **update})
+            except Exception:
+                pass  # ค่าใน overlay ผิดชนิด — ข้าม ไม่ให้ catalog พัง
+        out.append(e)
+    return out
+
+
 def load_all(
     vendor_path: str | None = None,
     user_path: str | None = None,
+    facts_path: str | None = None,
 ) -> list[ModelEntry]:
-    """merge vendor + user — id ชนกัน ของผู้ใช้ชนะ (ADR 0001) · ลำดับ: vendor ก่อน แล้วต่อด้วย user ที่เหลือ"""
+    """merge vendor + user — id ชนกัน ของผู้ใช้ชนะ (ADR 0001) · ลำดับ: vendor ก่อน แล้วต่อด้วย user ที่เหลือ
+    แล้วเติม arch/ctx_train จาก overlay model-facts.json เฉพาะ field ที่ยังเป็น None"""
     vendor = load_vendor(vendor_path)
     user = load_user(user_path)
     user_by_id = {e.id: e for e in user}
 
     merged = [user_by_id.pop(e.id, e) for e in vendor]
     merged.extend(user_by_id.values())  # user entry ที่ไม่ได้ชนกับ vendor เลย
-    return merged
+    return _apply_facts(merged, load_facts(facts_path))
 
 
 # ---------------------------------------------------------------------------
