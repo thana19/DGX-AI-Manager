@@ -547,6 +547,8 @@
      ของเราเอง ซึ่ง proxy ไป DGX Monitor อีกที เพราะฝั่งนั้นไม่เปิด CORS */
 
   var GAUGE_TOTAL_TICKS = 40;
+  var GAUGE_ERR_FRACTION = 0.8;   // เกิน 80% ของเพดาน = แดง
+  var GAUGE_WARN_FRACTION = 0.6;  // เกิน 60% ของเพดาน = เหลือง — ไม่ใช้ warn ของ API เพราะทุกตัวตั้งไว้ ≥ 80% (เหลืองไม่มีวันโผล่)
   var GAUGE_COLOR = { ok: "#5cc8d8", warn: "#e6c25f", err: "#e06c6c" };
   var GAUGE_TICK_OFF = "rgba(255,255,255,0.12)";
   var GAUGE_TICK_FAINT = "rgba(92,200,216,0.35)";
@@ -556,8 +558,8 @@
   };
 
   function gaugeStatus(value, max, warn){
-    if(max && value >= max * 0.98) return "err";
-    if(warn !== undefined && warn !== null && value >= warn) return "warn";
+    if(max && value > max * GAUGE_ERR_FRACTION) return "err";
+    if(max && value > max * GAUGE_WARN_FRACTION) return "warn";
     return "ok";
   }
 
@@ -1092,9 +1094,15 @@
         '<div class="model-actions">' + actions + '</div>' +
         '<div class="activate-panel" id="activate-panel-' + escapeHtml(m.id) + '">' +
           '<div class="field"><label>พอร์ต</label>' +
-            '<select class="act-port"><option value="8001">8001</option><option value="8002">8002</option></select>' +
+            '<select class="act-port"></select>' +
+            '<div class="act-port-warn" style="display:none;color:var(--orange);font-size:12px;margin-top:4px"></div>' +
           '</div>' +
-          '<div class="field"><label>ctx</label><input type="number" class="act-ctx" value="' + escapeHtml(m.ctx || m.ctx_train || "") + '"></div>' +
+          '<div class="field"><label>ctx' + (m.ctx_train ? ' <span style="color:var(--sub)">(เพดาน ' + fmtInt(m.ctx_train) + ')</span>' : '') + '</label>' +
+            '<input type="number" class="act-ctx" min="1"' + (m.ctx_train ? ' max="' + escapeHtml(m.ctx_train) + '"' : '') +
+              ' value="' + escapeHtml(m.ctx || m.ctx_train || "") + '">' +
+            '<div class="act-ctx-presets"></div>' +
+            '<div class="act-ctx-warn" style="display:none;color:var(--orange);font-size:12px;margin-top:4px"></div>' +
+          '</div>' +
           '<button class="small primary act-confirm" data-id="' + escapeHtml(m.id) + '">เริ่ม</button>' +
           '<div class="activate-log" style="display:none;"></div>' +
         '</div>' +
@@ -1116,18 +1124,93 @@
     if(upBtn) upBtn.addEventListener("click", function(){ upgradeEngine(m.engine, upBtn); });
 
     var toggleBtn = card.querySelector(".btn-activate-toggle");
-    if(toggleBtn) toggleBtn.addEventListener("click", function(){
+    if(toggleBtn) toggleBtn.addEventListener("click", async function(){
       var panel = document.getElementById("activate-panel-" + m.id);
       panel.classList.toggle("open");
+      if(!panel.classList.contains("open")) return;
+      // ป้ายพอร์ตต้องสดเสมอ — ดึงรายการ instance ใหม่ตอนเปิดแผง (พังก็ใช้ state เดิมต่อ)
+      try{
+        var data = await apiFetch("/api/instances");
+        state.instances = data.instances || [];
+      }catch(e){}
+      refreshActivatePanel(panel, m);
     });
+
+    var actPanel = card.querySelector(".activate-panel");
+    if(actPanel){
+      refreshActivatePanel(actPanel, m);
+      actPanel.querySelector(".act-port").addEventListener("change", function(){ updateActivateWarnings(actPanel, m); });
+      actPanel.querySelector(".act-ctx").addEventListener("input", function(){ updateActivateWarnings(actPanel, m); });
+    }
 
     var confirmBtn = card.querySelector(".act-confirm");
     if(confirmBtn) confirmBtn.addEventListener("click", function(){
       var panel = document.getElementById("activate-panel-" + m.id);
       var port = parseInt(panel.querySelector(".act-port").value, 10);
       var ctx = parseInt(panel.querySelector(".act-ctx").value, 10);
+      if(isNaN(ctx)) ctx = null;  // ช่องว่าง = ให้ engine ใช้ค่า default
       activateModel(m.id, port, ctx, confirmBtn, panel.querySelector(".activate-log"));
     });
+  }
+
+  // ctx ปุ่มลัด — ซ่อนตัวที่เกินเพดาน ctx_train; มีปุ่ม "max" = เพดานเสมอเมื่อรู้ค่า
+  var ACT_CTX_PRESETS = [8192, 32768, 65536, 131072];
+
+  function refreshActivatePanel(panel, m){
+    var sel = panel.querySelector(".act-port");
+    var prev = sel.value;
+    var used = {};
+    (state.instances || []).forEach(function(i){ used[i.port] = i; });
+    var html = "", firstFree = null;
+    for(var port = 8001; port <= 8009; port++){
+      var inst = used[port];
+      if(!inst && firstFree === null) firstFree = port;
+      html += '<option value="' + port + '">' + port +
+        (inst ? ' — ใช้อยู่: ' + escapeHtml(inst.model_file || inst.engine) : ' — ว่าง') + '</option>';
+    }
+    sel.innerHTML = html;
+    sel.value = prev && sel.querySelector('option[value="' + cssEscape(prev) + '"]') ? prev : String(firstFree || 8001);
+
+    var presetsEl = panel.querySelector(".act-ctx-presets");
+    if(!presetsEl.hasAttribute("data-built")){
+      presetsEl.setAttribute("data-built", "1");
+      var vals = ACT_CTX_PRESETS.filter(function(v){ return !m.ctx_train || v <= m.ctx_train; });
+      var btns = vals.map(function(v){
+        return '<button type="button" class="small act-ctx-preset" data-ctx="' + v + '">' + (v / 1024) + 'K</button>';
+      });
+      if(m.ctx_train && vals.indexOf(m.ctx_train) === -1){
+        btns.push('<button type="button" class="small act-ctx-preset" data-ctx="' + m.ctx_train + '">max</button>');
+      }
+      presetsEl.innerHTML = btns.join(" ");
+      presetsEl.addEventListener("click", function(ev){
+        var b = ev.target.closest(".act-ctx-preset");
+        if(!b) return;
+        panel.querySelector(".act-ctx").value = b.getAttribute("data-ctx");
+        updateActivateWarnings(panel, m);
+      });
+    }
+    updateActivateWarnings(panel, m);
+  }
+
+  function updateActivateWarnings(panel, m){
+    var port = parseInt(panel.querySelector(".act-port").value, 10);
+    var portWarn = panel.querySelector(".act-port-warn");
+    var inst = (state.instances || []).filter(function(i){ return i.port === port; })[0];
+    if(inst){
+      portWarn.style.display = "block";
+      portWarn.textContent = "⚠️ จะหยุดโมเดลเดิมบนพอร์ตนี้ (" + (inst.model_file || inst.engine) + ")";
+    }else{
+      portWarn.style.display = "none";
+    }
+
+    var ctx = parseInt(panel.querySelector(".act-ctx").value, 10);
+    var ctxWarn = panel.querySelector(".act-ctx-warn");
+    var bad = null;
+    if(!isNaN(ctx) && ctx <= 0) bad = "ctx ต้องมากกว่า 0";
+    else if(!isNaN(ctx) && m.ctx_train && ctx > m.ctx_train) bad = "ctx เกินเพดานของโมเดล (" + fmtInt(m.ctx_train) + ")";
+    ctxWarn.style.display = bad ? "block" : "none";
+    ctxWarn.textContent = bad ? "⚠️ " + bad : "";
+    panel.querySelector(".act-confirm").disabled = !!bad;
   }
 
   function cssEscape(s){

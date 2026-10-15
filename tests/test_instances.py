@@ -145,3 +145,69 @@ def test_stop_port_8000_ลอง_docker_rm_ด้วยเสมอ(monkeypatch
     ok, _message = instances.stop(8000)
     assert ok is True
     assert calls["docker_rm"] == 1
+
+
+# ---------------------------------------------------------------------------
+# พอร์ตของ vLLM อ่านจาก label aiserver.port
+# ---------------------------------------------------------------------------
+
+
+def _fake_inspect_label(monkeypatch, stdout: str, returncode: int = 0):
+    import subprocess
+
+    monkeypatch.setattr(
+        instances.subprocess, "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a[0], returncode, stdout=stdout, stderr=""),
+    )
+
+
+def test_vllm_port_อ่านจาก_label(monkeypatch):
+    _fake_inspect_label(monkeypatch, "8003\n")
+    assert instances._vllm_port() == 8003
+
+
+def test_vllm_port_ไม่มี_label_fallback_8000(monkeypatch):
+    for out in ("", "<no value>\n", "abc\n"):
+        _fake_inspect_label(monkeypatch, out)
+        assert instances._vllm_port() == 8000
+
+
+def test_vllm_port_docker_inspect_ล้มเหลว_fallback_8000(monkeypatch):
+    _fake_inspect_label(monkeypatch, "", returncode=1)
+    assert instances._vllm_port() == 8000
+
+
+def test_scan_vllm_ใช้พอร์ตจาก_label(monkeypatch):
+    monkeypatch.setattr(instances, "_docker_ps_names", lambda: {"aiserver-vllm"})
+    monkeypatch.setattr(instances, "_vllm_model_info", lambda: ("/models/foo", "foo"))
+    monkeypatch.setattr(instances, "_vllm_port", lambda: 8003)
+    result = instances.scan(ps_output="", probe=False)
+    assert [i.port for i in result] == [8003]
+
+
+def test_stop_vllm_บนพอร์ต_8003_rm_container(monkeypatch):
+    calls = {"docker_rm": 0}
+    monkeypatch.setattr(instances, "_fuser_kill", lambda port: None)
+    monkeypatch.setattr(instances, "_docker_rm_vllm", lambda: calls.__setitem__("docker_rm", calls["docker_rm"] + 1))
+    states = [
+        [instances.Instance(port=8003, engine="vllm", pid=None, model_file="foo", model_path="/models/foo", ctx=None, rss_gb=0.0, up=False)],
+        [],
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: states.pop(0) if states else [])
+    ok, _ = instances.stop(8003)
+    assert ok is True
+    assert calls["docker_rm"] == 1
+
+
+def test_stop_llamacpp_บน_8000_ไม่ยุ่ง_container_vllm_ที่อยู่พอร์ตอื่น(monkeypatch):
+    calls = {"docker_rm": 0}
+    monkeypatch.setattr(instances, "_fuser_kill", lambda port: None)
+    monkeypatch.setattr(instances, "_docker_rm_vllm", lambda: calls.__setitem__("docker_rm", calls["docker_rm"] + 1))
+    states = [
+        [instances.Instance(port=8000, engine="llamacpp", pid=1, model_file="m", model_path="/m", ctx=None, rss_gb=1.0, up=False)],
+        [],
+    ]
+    monkeypatch.setattr(instances, "scan", lambda **kw: states.pop(0) if states else [])
+    ok, _ = instances.stop(8000)
+    assert ok is True
+    assert calls["docker_rm"] == 0

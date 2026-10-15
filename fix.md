@@ -108,3 +108,17 @@
   3. `engines.check_arch()` เช็ค `arch is None` เท่านั้น สตริงว่างหลุดไปข้อ 8 "ไม่อยู่ใน arch list" → NEEDS_UPGRADE
 - **วิธีแก้**: `hf.probe_download_access(url, token=)` HEAD ด้วย token ที่จำไว้ คืนข้อความจาก `x-error-message` เมื่อ 401/403 · `create_download()` ตรวจทุกครั้งสำหรับ URL huggingface.co: ไม่มี token → 400 บอกให้ใส่ token · มี token แต่ HF ปฏิเสธ → 400 แนบข้อความ HF + บอกให้กด 'Agree and access repository' และตรวจสิทธิ์ token · UI: `DOWNLOAD_FINISHED_STATES = done/error/cancelled` ไปแท็บ "จบแล้ว" · `check_arch()` normalize `""`/ช่องว่าง → None (ข้อ 5 UNKNOWN)
 - **ยืนยันแล้ว**: 2026-09-23 06:20 — deploy `:9001` แล้ว `POST /api/downloads` entry mainline ตอบ 400 "HF ปฏิเสธ (403): Access to model … not in the authorized list … — ต้องกด 'Agree and access repository' …" · `GET /api/models` entry Navin ทั้งสอง compat `unknown` action None · unit test 351/351 (ใหม่ 9) · ⚠️ ณ เวลานี้บัญชีของพี่หนุ่มยังไม่ได้กด Agree (HEAD ด้วย token ยัง 403) — ต้องทำก่อนจึงโหลดได้
+
+## [2026-10-15 09:11] vLLM ล็อกพอร์ต 8000 — เลือกพอร์ตอื่นใน UI แล้วยังขึ้น :8000 ทับ LLM หลัก
+
+- **อาการ**: เลือกพอร์ต 8001 ในหน้าโหลดโมเดลสำหรับ vLLM แต่ container ยังขึ้นที่ :8000 และทับ LLM หลักที่รันอยู่
+- **สาเหตุ**: `engines/vllm.sh` hardcode `PORT=8000` และ `-p 8000:8000` จึงไม่สนพอร์ตที่ UI ส่งมา · และ `vllm.sh` ลบ container ตัวเดียว (`aiserver-vllm`) ไม่ว่าพอร์ตไหน
+- **วิธีแก้**: `engines/vllm.sh` ใช้ `$PORT`, `-p "$PORT":8000`, ติด `--label aiserver.port=$PORT`, และ `docker rm -f aiserver-vllm` เสมอ · `engines/common.sh` `stop_engine_port` อ่าน label (ไม่มี → 8000) · `server/instances.py` `_vllm_port()` อ่าน label (fallback 8000) และ `stop()` ลบ container เมื่อ `inst.engine == "vllm"` · เพิ่มด่านใน `server/main.py` `activate()` — ถ้ามี vLLM ถือ :8000 อยู่แล้วและคำขอเป็น vLLM บนพอร์ตอื่นโดยไม่มี `allow_main_port` → 409
+- **ยืนยันแล้ว**: 2026-10-15 09:11 — unit test ผ่าน (label/stop/ด่าน 409) · ⚠️ ยังไม่ได้ทดสอบ vLLM บนพอร์ตที่ไม่ใช่ 8000 กับ docker จริง
+
+## [2026-10-15 11:44] Gauge ไม่มีสีเหลือง
+
+- **อาการ**: gauge ข้ามจากสีฟ้าไปสีแดงเลย ไม่เคยเห็นเหลือง
+- **สาเหตุ**: สีเหลืองอิงค่า `warn` จาก API แต่ทุก `warn` อยู่ที่ ≥ ~80% ของค่าสูงสุด (temp 75/90 = 83%, power 100/120 = 83%, GPU 95%, RAM 109.5/121.7 = 90%, CPU 80%, disk 85%) สีแดงจึงทำงานก่อนเสมอ
+- **วิธีแก้**: `server/static/index.html` เปลี่ยนเป็นเกณฑ์คงที่ตามสัดส่วนของค่าสูงสุด — ฟ้า ≤60% · เหลือง >60–80% · แดง >80% (`GAUGE_WARN_FRACTION=0.6`, `GAUGE_ERR_FRACTION=0.8`) ไม่ใช้ `warn` จาก API แล้ว
+- **ยืนยันแล้ว**: 2026-10-15 11:44 — deploy แล้ว หน้าที่เสิร์ฟมี `GAUGE_WARN_FRACTION` และพี่หนุ่มเห็นหน้าจอแล้ว · ⚠️ น้องมิกะยังไม่ได้ยืนยันสีบนหน้าจอจริงด้วยตัวเองหลังแก้

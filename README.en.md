@@ -8,10 +8,12 @@ A web-based LLM model & engine manager for the DGX Spark (GB10) — one page for
 
 ### 🎛️ System dashboard
 - Six live gauges across the top (CPU · RAM · GPU, etc.), styled to match DGX Spark Monitor
+- Three-level gauge colours: blue ≤60% · yellow >60–80% · red >80% of max
 
 ### 🧠 Running models
 - See every live instance on every port, with a stop button right on the page
 - Detects speculative decoding (FastMTP) and recovers automatically when the draft model fails to load
+- Pick the port (8001–8009, shown as in use / free) and context size (8K/32K/64K/128K/max presets, warns above the model's ceiling) when loading a model
 
 ### 💬 Chat playground
 - Talk to a running model from the same page, with real-time streaming responses

@@ -860,6 +860,14 @@ def _activate_summary(log_text: str) -> dict[str, Any]:
 
 @app.post("/api/activate")
 def activate(req: ActivateReq) -> dict[str, Any]:
+    if not (_STOPPABLE_PORT_MIN <= req.port <= _STOPPABLE_PORT_MAX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"พอร์ต {req.port} อยู่นอกช่วงที่ใช้ได้ ({_STOPPABLE_PORT_MIN}–{_STOPPABLE_PORT_MAX})",
+        )
+    if req.ctx is not None and req.ctx <= 0:
+        raise HTTPException(status_code=400, detail=f"ctx ต้องมากกว่า 0 (ได้ {req.ctx})")
+
     if req.port == _MAIN_LLM_PORT and not req.allow_main_port:
         raise HTTPException(
             status_code=409,
@@ -874,6 +882,12 @@ def activate(req: ActivateReq) -> dict[str, Any]:
     if entry is None:
         raise HTTPException(status_code=404, detail=f"ไม่พบโมเดล id={req.id}")
 
+    if req.ctx is not None and entry.ctx_train is not None and req.ctx > entry.ctx_train:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ctx {req.ctx} เกินเพดานของโมเดล {entry.id} (ctx_train = {entry.ctx_train})",
+        )
+
     if not catalog.is_ready(entry):
         raise HTTPException(status_code=409, detail=f"โมเดล {entry.id} ยังดาวน์โหลดไม่ครบ — ดาวน์โหลดให้เสร็จก่อนโหลดขึ้นแรม")
 
@@ -886,6 +900,18 @@ def activate(req: ActivateReq) -> dict[str, Any]:
 
     if compat.status == engines.Compat.NEEDS_UPGRADE:
         raise HTTPException(status_code=409, detail=compat.reason)
+
+    # vLLM รันได้ทีละ container (vllm.sh ลบตัวเดิมทิ้งเสมอไม่ว่าอยู่พอร์ตไหน) — ถ้าตัวเดิมคือ LLM หลัก :8000
+    # การโหลด vLLM ลงพอร์ตอื่นจะฆ่า :8000 ทางอ้อม ต้องผ่านด่าน allow_main_port เหมือนสั่งตรง
+    if entry.engine == "vllm" and req.port != _MAIN_LLM_PORT and not req.allow_main_port:
+        if any(i.engine == "vllm" and i.port == _MAIN_LLM_PORT for i in instances.scan(probe=False)):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "vLLM รันได้ทีละตัว และตอนนี้ vLLM ตัวที่ถือพอร์ต 8000 (LLM หลัก) อยู่ — โหลดตัวนี้จะหยุดตัวหลักไปด้วย "
+                    "ถ้าตั้งใจจริงให้ส่ง allow_main_port เป็น true"
+                ),
+            )
 
     # ด่านแรม: โมเดลใหญ่กว่าแรมที่เหลือ = ตายตอนโหลดแน่นอน บอกก่อนดีกว่าปล่อยให้ OOM
     # (กันชน 8GB สำหรับ OS + buffer — ค่าเดียวกับ SAFETY_GB ของ v1)

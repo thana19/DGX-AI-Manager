@@ -150,3 +150,13 @@ session นี้ไม่ได้เพิ่มฟีเจอร์ เป�
   3. **ฟีเจอร์ upgrade** — เริ่มจาก `superpowers:brainstorming` (architectural) โดยอ่าน `docs/notes/2026-09-22-upgrade-exploration.md` ก่อน คำถามแรกที่ต้องถามพี่หนุ่ม: `aiserver.in.th/dl.php` ยังใช้ได้ไหม และมีวิธีถาม "รุ่นล่าสุด" ก่อนดาวน์โหลดไหม
   4. ไอเดียค้าง: ปุ่ม "ตรวจสอบใหม่" บนการ์ดเพื่อเติม arch ให้ entry ที่ arch ว่าง
 - **Suggested Skills**: `superpowers:brainstorming` · `new-project-setup` (PRD/HTML plan ก่อน implement) · `project-hygiene`
+
+## [2026-10-15 09:04 → 16:13] เลือกพอร์ต/ctx ตอนโหลดโมเดล + สี gauge 3 ระดับ
+
+- **สิ่งที่ทำ**: เพิ่มแผงโหลดโมเดลเลือกพอร์ต 8001–8009 + ctx (ปุ่มลัด/เพดาน) · backend ตรวจพอร์ต/ctx (400) และด่าน vLLM พอร์ตหลัก (409) · แก้ vLLM ล็อกพอร์ต 8000 · gauge 3 สี (60/80%) — อ้าง `fix.md` entries `[2026-10-15 09:11]` และ `[2026-10-15 11:44]`, `TESTING.md` entry `[2026-10-15 11:44]` · แผน: `/Users/thanachantrapong/.claude/plans/1-port-zazzy-russell.md`
+- **สถานะระบบล่าสุด**: `:9001` deploy ด้วยโค้ดนี้แล้ว · `:8001` = `Qwen3-8B-Q8_0.gguf` ctx 40960
+- **งานค้าง / ควรทำ session ถัดไป**:
+  1. ทดสอบ vLLM บนพอร์ตที่ไม่ใช่ 8000 กับ docker จริง (ต้องให้พี่หนุ่มอนุญาตก่อน)
+  2. ไอเดีย: ใส่ `Cache-Control: no-cache` ให้ index.html กัน browser cache เก่า
+  3. งานค้างเดิมยังเปิดอยู่: กด Agree ที่ HF repo Navin แล้วโหลด mainline · brainstorm ฟีเจอร์ upgrade · ไอเดียปุ่ม "ตรวจสอบใหม่" (re-verify arch) บนการ์ด
+- **Suggested Skills**: `superpowers:brainstorming` · `project-hygiene`

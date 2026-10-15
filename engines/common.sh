@@ -8,10 +8,15 @@ mkdir -p "$LOG_DIR"
 PORT="${PORT:-8000}"
 
 stop_engine_port() {
-  # หยุดเฉพาะตัวที่ถือพอร์ตนี้ (vLLM container ผูก :8000 เท่านั้น)
+  # หยุดเฉพาะตัวที่ถือพอร์ตนี้ — vLLM container บอกพอร์ตผ่าน label aiserver.port (ไม่มี label = รุ่นเก่า ผูก 8000)
   # สำคัญ: ทุกคำสั่งต้อง || true — พอร์ตว่างคือเรื่องปกติ ห้ามให้ set -e ฆ่าสคริปต์
   local port="${1:-$PORT}"
-  if [ "$port" = "8000" ]; then docker rm -f aiserver-vllm >/dev/null 2>&1 || true; fi
+  local vport
+  vport=$(docker inspect --format '{{index .Config.Labels "aiserver.port"}}' aiserver-vllm 2>/dev/null) || vport=""
+  if docker inspect aiserver-vllm >/dev/null 2>&1; then
+    case "$vport" in ""|"<no value>") vport=8000 ;; esac
+    if [ "$vport" = "$port" ]; then docker rm -f aiserver-vllm >/dev/null 2>&1 || true; fi
+  fi
   fuser -k "$port/tcp" 2>/dev/null || true
   sleep 3
 }

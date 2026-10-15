@@ -24,8 +24,9 @@ _PORT_RE = re.compile(r"--port\s+(\d+)")
 _MODEL_RE = re.compile(r"-m\s+(\S+)")
 _CTX_RE = re.compile(r"-c\s+(\d+)")
 
-_VLLM_PORT = 8000  # vLLM ผูก :8000 เท่านั้น (ดู engines/vllm.sh)
+_VLLM_PORT_DEFAULT = 8000  # container รุ่นเก่าที่ไม่มี label aiserver.port ผูก :8000 เสมอ (ดู engines/vllm.sh)
 _VLLM_CONTAINER = "aiserver-vllm"
+_VLLM_PORT_LABEL = "aiserver.port"
 
 _STOP_POLL_INTERVAL_SEC = 1
 _STOP_POLL_TIMEOUT_SEC = 15
@@ -93,6 +94,24 @@ def _vllm_model_info() -> tuple[str, str]:
             path = cmd[i + 1]
             return path, os.path.basename(path)
     return "", ""
+
+
+def _vllm_port() -> int:
+    """พอร์ตที่ container vLLM เปิดให้ข้างนอก — อ่านจาก label aiserver.port (ตั้งโดย engines/vllm.sh)
+
+    ไม่มี label / อ่านไม่ได้ = container รุ่นเก่า → fallback 8000
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", '{{index .Config.Labels "' + _VLLM_PORT_LABEL + '"}}', _VLLM_CONTAINER],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return _VLLM_PORT_DEFAULT
+    if result.returncode != 0:
+        return _VLLM_PORT_DEFAULT
+    out = result.stdout.strip()
+    return int(out) if out.isdigit() else _VLLM_PORT_DEFAULT
 
 
 def _probe_up(port: int) -> bool:
@@ -182,7 +201,7 @@ def scan(*, ps_output: str | None = None, probe: bool = True) -> list[Instance]:
     if _VLLM_CONTAINER in _docker_ps_names():
         model_path, model_file = _vllm_model_info()
         found.append(Instance(
-            port=_VLLM_PORT, engine="vllm", pid=None,
+            port=_vllm_port(), engine="vllm", pid=None,
             model_file=model_file, model_path=model_path,
             ctx=None, rss_gb=0.0, up=False,
         ))
@@ -201,15 +220,15 @@ def scan(*, ps_output: str | None = None, probe: bool = True) -> list[Instance]:
 def stop(port: int) -> tuple[bool, str]:
     """หยุด instance บนพอร์ตนั้น — คืน (สำเร็จไหม, ข้อความไทย)
 
-    พอร์ต 8000 → ลอง `docker rm -f aiserver-vllm` ก่อนเสมอ (แบบเดียวกับ stop_engine_port ใน engines/common.sh
-    — ปลอดภัยแม้ไม่มี container จริง เพราะแค่ไม่มีอะไรให้ลบ) จากนั้น `fuser -k <port>/tcp` แล้วรอพอร์ตว่างจริง
+    instance เป็น vLLM (พอร์ตตาม label aiserver.port ของ container) → `docker rm -f aiserver-vllm` ก่อน
+    (แบบเดียวกับ stop_engine_port ใน engines/common.sh) จากนั้น `fuser -k <port>/tcp` แล้วรอพอร์ตว่างจริง
     """
     current = {i.port: i for i in scan(probe=False)}
     inst = current.get(port)
     if inst is None:
         return False, f"ไม่มี instance บนพอร์ต {port} อยู่แล้ว"
 
-    if port == _VLLM_PORT:
+    if inst.engine == "vllm":  # scan() ใส่พอร์ตจาก label มาแล้ว → ตรงพอร์ตนี้แน่นอน
         _docker_rm_vllm()
     _fuser_kill(port)
 

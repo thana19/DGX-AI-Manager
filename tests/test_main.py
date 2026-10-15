@@ -635,6 +635,60 @@ def test_activate_passes_engine_env_into_subprocess_env(client, monkeypatch, tmp
     assert env["VLLM_SPECULATIVE"] == ""
 
 
+def test_activate_ปฏิเสธพอร์ตนอกช่วง_8000_8009(client):
+    for port in (7999, 8010, 80, 70000):
+        resp = client.post("/api/activate", json={"id": "qwen38-ud-q4-mtp", "port": port})
+        assert resp.status_code == 400, port
+        assert "8009" in resp.json()["detail"]
+
+
+def test_activate_ปฏิเสธ_ctx_ที่_น้อยกว่าหรือเท่ากับศูนย์(client):
+    for ctx in (0, -1):
+        resp = client.post("/api/activate", json={"id": "qwen38-ud-q4-mtp", "port": 8001, "ctx": ctx})
+        assert resp.status_code == 400, ctx
+
+
+def test_activate_ปฏิเสธ_ctx_เกิน_ctx_train_และบอกเพดาน(client):
+    resp = client.post("/api/activate", json={"id": "qwen38-ud-q4-mtp", "port": 8001, "ctx": 262145})
+    assert resp.status_code == 400
+    assert "262144" in resp.json()["detail"]
+
+
+def test_activate_ctx_เท่ากับเพดานผ่านด่าน_ctx(client):
+    # ผ่านด่าน ctx แล้วไปตกที่ "ดาวน์โหลดไม่ครบ" (409) แทน 400
+    resp = client.post("/api/activate", json={"id": "qwen38-ud-q4-mtp", "port": 8001, "ctx": 262144})
+    assert resp.status_code == 409
+
+
+def test_activate_ctx_เป็น_null_ใช้ค่า_default_ของ_engine(client, monkeypatch):
+    entry = catalog.ModelEntry(id="test-ctx-null", name="T", engine="llamacpp", path="/x.gguf", ctx_train=4096)
+    monkeypatch.setattr(catalog, "load_all", lambda *a, **kw: [entry])
+    resp = client.post("/api/activate", json={"id": "test-ctx-null", "port": 8001, "ctx": None})
+    assert resp.status_code == 409  # ไม่ใช่ 400/422 — ไปตกที่ด่านดาวน์โหลด
+
+
+def test_activate_ส่งพอร์ตที่เลือกเข้า_env_PORT(client, monkeypatch, tmp_path):
+    model_dir = tmp_path / "vllm-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_bytes(b"{}")
+    entry = catalog.ModelEntry(id="test-vllm-port", name="T", engine="vllm", path=str(model_dir), ctx_train=65536)
+    monkeypatch.setattr(catalog, "load_all", lambda *a, **kw: [entry])
+    monkeypatch.setattr(engines, "detect", lambda name: engines.EngineInfo(
+        name=name, installed=True, version="v", build=None, archs=frozenset(), detail="fake"))
+
+    captured: dict = {}
+
+    def fake_run(argv, env=None, **kwargs):
+        captured["env"] = env
+        return subprocess.CompletedProcess(argv, 0, stdout="READY\n", stderr="")
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    resp = client.post("/api/activate", json={"id": "test-vllm-port", "port": 8003, "ctx": 32768})
+    assert resp.status_code == 200
+    assert captured["env"]["PORT"] == "8003"
+    assert captured["env"]["CTX"] == "32768"
+
+
 # ---------------------------------------------------------------------------
 # /api/downloads
 # ---------------------------------------------------------------------------
@@ -1347,3 +1401,24 @@ def test_gateway_ถอยไปเทียบชื่อเมื่อ_model
     gw = client.get("/api/endpoints").json()["gateway"]
 
     assert gw["recommended_model"] == "MyModel-Q8_0", "fallback เทียบชื่อต้องยังทำงาน"
+
+
+def test_activate_vllm_ปฏิเสธเมื่อจะไปทับ_vllm_บนพอร์ตหลัก(client, monkeypatch, tmp_path):
+    """vllm.sh ลบ container เดิมเสมอ → โหลด vLLM ที่ 8001 ขณะ vLLM ถือ 8000 = ฆ่าตัวหลักทางอ้อม ต้อง 409"""
+    model_dir = tmp_path / "vllm-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_bytes(b"{}")
+    entry = catalog.ModelEntry(id="test-vllm-guard", name="Test vLLM", engine="vllm", path=str(model_dir))
+    monkeypatch.setattr(catalog, "load_all", lambda *a, **kw: [entry])
+    monkeypatch.setattr(engines, "detect", lambda name: engines.EngineInfo(
+        name=name, installed=True, version="aiserver-vllm:26.07", build=None, archs=frozenset(), detail="fake"))
+    monkeypatch.setattr(main.instances, "scan", lambda **kw: [main.instances.Instance(
+        port=8000, engine="vllm", pid=None, model_file="x", model_path="/models/x", ctx=None, rss_gb=0.0, up=True)])
+
+    def fail_run(*a, **kw):
+        raise AssertionError("ต้องไม่เรียก engine script")
+    monkeypatch.setattr(main.subprocess, "run", fail_run)
+
+    r = client.post("/api/activate", json={"id": "test-vllm-guard", "port": 8001})
+    assert r.status_code == 409
+    assert "8000" in r.json()["detail"]

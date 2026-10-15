@@ -9,8 +9,10 @@ source "$(dirname "$0")/common.sh"
 MODEL_DIR="$1"; shift || true
 [ -d "$MODEL_DIR" ] || { echo "ไม่พบโฟลเดอร์โมเดล: $MODEL_DIR"; exit 1; }
 
-PORT=8000   # vLLM ผูกพอร์ตหลักเท่านั้น (โหมดเสิร์ฟหลายผู้ใช้ ควรได้ทั้งเครื่อง)
-stop_engine_port 8000
+# พอร์ตข้างนอกมาจาก $PORT (UI เลือก · default 8000 จาก common.sh) · ข้างใน container ยังเป็น 8000
+# container ชื่อเดียว (aiserver-vllm) = รัน vLLM ได้ทีละตัว (แรม 0.55) → ลบตัวเดิมทิ้งเสมอไม่ว่าอยู่พอร์ตไหน
+stop_engine_port "$PORT"
+docker rm -f aiserver-vllm >/dev/null 2>&1 || true
 free_ram_for_big_model
 # vLLM จอง gpu-memory-utilization 0.55 ของทั้งเครื่องตอน start — ถ้าแรมของตัวเดิมยังคืนไม่หมด (container เพิ่งถูกลบ)
 # จะตายทันที exit 1 → รอจน MemAvailable ≥ 58% (กันชนเล็กน้อย) สูงสุด 90 วิ
@@ -67,7 +69,7 @@ done
 # (เจอจริง: หน้าเว็บโชว์ error เป็น hash 64 ตัวแทน log จริง จนตามสาเหตุไม่ได้)
 # → เก็บ id ไว้ แล้วดึง log จริงจาก docker logs -f มาเขียนลงไฟล์แทน
 if ! CID=$(docker run -d --name aiserver-vllm --gpus all --ipc=host \
-  -p 8000:8000 -v "$(dirname "$MODEL_DIR")":/models "${ENV_FLAGS[@]}" \
+  -p "$PORT":8000 --label "aiserver.port=$PORT" -v "$(dirname "$MODEL_DIR")":/models "${ENV_FLAGS[@]}" \
   "$IMAGE" \
   vllm serve "/models/$(basename "$MODEL_DIR")" \
   --served-model-name "${MODEL_ID:-$(basename "$MODEL_DIR")}" auto \
